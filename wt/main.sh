@@ -62,7 +62,7 @@ LOG_DIR="${WEBROOT}/logs"
 WPCLI_USER="wpcli-${SLUG}"
 
 SELFSIGNCERT_ROOT="/etc/ssl/selfsigned"
-TEMPLATE_DIR="/home"
+TEMPLATE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 1) Must be root
 if (( EUID != 0 )); then
