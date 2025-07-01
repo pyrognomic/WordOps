@@ -209,7 +209,7 @@ fi
 
 if [[ ! -f "${NGINXROOT}/conf.d/default-deny.conf" ]]; then
 run_render '${SELFSIGNCERT_ROOT}' \
-  ${TEMPLATE_DIR}/nginx_default_deny.tpl "${NGINXROOT}/conf.d/default-deny.conf"
+  "${TEMPLATE_DIR}/nginx_default_deny.tpl" "${NGINXROOT}/conf.d/default-deny.conf"
 fi
 
 # 11) define individual php upstream for each website
@@ -232,8 +232,8 @@ ln -sf "${NGINXROOT}/sites-available/${DOMAIN}" "${NGINXROOT}/sites-enabled/${DO
 
 # 12) Enable & start the systemd instance
 systemctl daemon-reload
-systemctl enable ${SYSTEMD_UNIT}
-systemctl start ${SYSTEMD_UNIT}
+systemctl enable "${SYSTEMD_UNIT}"
+systemctl start "${SYSTEMD_UNIT}"
 
 if ! systemctl is-active --quiet php${PHPVER}-fpm@"${SLUG}".service; then
   echo "❌ php-fpm@${SLUG} failed to start" >&2
