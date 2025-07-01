@@ -9,7 +9,7 @@ set -euo pipefail
 #   sudo ./main.sh yourdomain.com --del    # delete/cleanup all related resources
 # WO install: wget -qO wo wops.cc && sudo bash wo
 # WO Stack install: wo stack install --nginx --php --mariadb --redis --wpcli --fail2ban
-# Create site: wo site create x.webtonify.com --wpfc --php84 --le --user='gabriel' --pass='Pyrowebtonify!123' --email='gabriel.teodor@webtonify.com'
+# Create site: wo site create domain.com --wpfc --php84 --le --user='xxx' --pass='xxx' --email='x@x.com'
 # https://imunify360.com/imunify360-demo/
 # https://github.com/rfxn/linux-malware-detect?tab=readme-ov-file
 # https://perishablepress.com/ng-firewall/
@@ -102,7 +102,7 @@ cleanup() {
   rm -f "${NGINXROOT}/conf.d/upstream-${SLUG}.conf" \
         "${NGINXROOT}/common/php${PHPVER_STRIPPED}-${SLUG}.conf" \
         "${NGINXROOT}/common/wpcommon-php${PHPVER_STRIPPED}-${SLUG}.conf"
-  
+
   # remove nginx from php-fpm group and php-fpm user from wp-cli group
   gpasswd -d www-data "${PHPFPM_USER}" || true
   gpasswd -d "${PHPFPM_USER}" "${WPCLI_USER}" || true
