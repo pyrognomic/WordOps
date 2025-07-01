@@ -180,7 +180,7 @@ export \
   SELFSIGNCERT_ROOT
 
 if [[ ! -f "${PHP_FPM_SYSTEMD_TPL}" ]]; then
-  run_render '${PHPVER}' < "${TEMPLATE_DIR}/php-fpm-systemd.tpl" "${PHP_FPM_SYSTEMD_TPL}"
+  run_render '${PHPVER}' "${TEMPLATE_DIR}/php-fpm-systemd.tpl" "${PHP_FPM_SYSTEMD_TPL}"
 fi
 
 # 8) Write the per-site PHP-FPM global config
