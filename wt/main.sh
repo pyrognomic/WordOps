@@ -95,7 +95,8 @@ cleanup() {
   systemctl disable "${SYSTEMD_UNIT}" || true
   systemctl daemon-reload
 
-  rm -f "${PHP_MASTER_CONF}" "${PHP_LOG_DIR}"
+  rm -f "${PHP_MASTER_CONF_FILE}"
+  rm -rf "${PHP_LOG_DIR}"
   rm -f "${NGINXROOT}/sites-enabled/${DOMAIN}" \
         "${NGINXROOT}/sites-available/${DOMAIN}"
   rm -f "${NGINXROOT}/conf.d/upstream-${SLUG}.conf" \
