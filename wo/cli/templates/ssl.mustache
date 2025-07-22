@@ -9,8 +9,8 @@ more_set_headers 'Alt-Svc h3=":$server_port"; ma=86400';
 quic_retry on;
 
 # Listen on port 443 with HTTP/3 QUIC
-listen 443 quic;
-listen [::]:443 quic;
+listen 443 quic reuseport;
+listen [::]:443 quic reuseport;
 
 # listen on port 443 with HTTP/2
 listen 443 ssl;
