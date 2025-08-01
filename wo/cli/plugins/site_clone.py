@@ -1,21 +1,36 @@
 import os
+import re
+from getpass import getpass
 
 from cement.core.controller import CementBaseController, expose
 from wo.cli.plugins.site_functions import (
-    detSitePar, check_domain_exists, site_package_check,
-    pre_run_checks, setupdomain, SiteError,
-    doCleanupAction, setupdatabase, setupwordpress, setwebrootpermissions,
-    display_cache_settings, copyWildcardCert)
-from wo.cli.plugins.sitedb import (addNewSite, deleteSiteInfo,
-                                   updateSiteInfo)
-from wo.core.acme import WOAcme
+    check_domain_exists, pre_run_checks, setupdomain,
+    setupdatabase, setupwordpress, setwebrootpermissions)
+from wo.cli.plugins.sitedb import addNewSite, updateSiteInfo, getSiteInfo
 from wo.core.domainvalidate import WODomain
-from wo.core.git import WOGit
 from wo.core.logging import Log
 from wo.core.nginxhashbucket import hashbucket
 from wo.core.services import WOService
-from wo.core.sslutils import SSL
 from wo.core.variables import WOVar
+from wo.core.shellexec import WOShellExec
+from wo.core.fileutils import WOFileUtils
+
+
+def _parse_db_config(path):
+    creds = {}
+    if not os.path.isfile(path):
+        return creds
+    with open(path, 'r') as f:
+        for line in f:
+            if 'DB_NAME' in line:
+                creds['DB_NAME'] = line.split("'")[3]
+            elif 'DB_USER' in line:
+                creds['DB_USER'] = line.split("'")[3]
+            elif 'DB_PASSWORD' in line:
+                creds['DB_PASSWORD'] = line.split("'")[3]
+            elif 'DB_HOST' in line:
+                creds['DB_HOST'] = line.split("'")[3]
+    return creds
 
 
 class WOSiteCloneController(CementBaseController):
@@ -23,549 +38,125 @@ class WOSiteCloneController(CementBaseController):
         label = 'clone'
         stacked_on = 'site'
         stacked_type = 'nested'
-        description = ('this commands allow you to clone a site')
+        description = 'clone an existing site'
         arguments = [
-            (['site_name'],
-                dict(help='domain name for the site to be cloned.',
-                     nargs='?')),
-            (['newsite_name'],
-                dict(help='domain name for the site to be created.',
-                     nargs='?')),
-            (['--html'],
-                dict(help="create html site", action='store_true')),
-            (['--php'],
-             dict(help="create php 7.2 site", action='store_true')),
-            (['--php72'],
-                dict(help="create php 7.2 site", action='store_true')),
-            (['--php73'],
-                dict(help="create php 7.3 site", action='store_true')),
-            (['--php74'],
-                dict(help="create php 7.4 site", action='store_true')),
-            (['--mysql'],
-                dict(help="create mysql site", action='store_true')),
-            (['--wp'],
-                dict(help="create WordPress single site",
-                     action='store_true')),
-            (['--wpsubdir'],
-                dict(help="create WordPress multisite with subdirectory setup",
-                     action='store_true')),
-            (['--wpsubdomain'],
-                dict(help="create WordPress multisite with subdomain setup",
-                     action='store_true')),
-            (['--wpfc'],
-                dict(help="create WordPress single/multi site with "
-                     "Nginx fastcgi_cache",
-                     action='store_true')),
-            (['--wpsc'],
-                dict(help="create WordPress single/multi site with wpsc cache",
-                     action='store_true')),
-            (['--wprocket'],
-             dict(help="create WordPress single/multi site with WP-Rocket",
-                  action='store_true')),
-            (['--wpce'],
-             dict(help="create WordPress single/multi site with Cache-Enabler",
-                  action='store_true')),
-            (['--wpredis'],
-                dict(help="create WordPress single/multi site "
-                     "with redis cache",
-                     action='store_true')),
-            (['-le', '--letsencrypt'],
-                dict(help="configure letsencrypt ssl for the site",
-                     action='store' or 'store_const',
-                     choices=('on', 'subdomain', 'wildcard'),
-                     const='on', nargs='?')),
-            (['--force'],
-                dict(help="force Let's Encrypt certificate issuance",
-                     action='store_true')),
-            (['--dns'],
-                dict(help="choose dns provider api for letsencrypt",
-                     action='store' or 'store_const',
-                     const='dns_cf', nargs='?')),
-            (['--dnsalias'],
-                dict(help="set domain used for acme dns alias validation",
-                     action='store', nargs='?')),
-            (['--hsts'],
-                dict(help="enable HSTS for site secured with letsencrypt",
-                     action='store_true')),
-            (['--ngxblocker'],
-                dict(help="enable HSTS for site secured with letsencrypt",
-                     action='store_true')),
-            (['--user'],
-                dict(help="provide user for WordPress site")),
-            (['--email'],
-                dict(help="provide email address for WordPress site")),
-            (['--pass'],
-                dict(help="provide password for WordPress user",
-                     dest='wppass')),
-            (['--proxy'],
-                dict(help="create proxy for site", nargs='+')),
-            (['--vhostonly'], dict(help="only create vhost and database "
-                                   "without installing WordPress",
-                                   action='store_true')),
+            (['site_name'], dict(help='source site', nargs='?')),
+            (['newsite_name'], dict(help='destination site', nargs='?')),
+            (['--new'], dict(help='do not copy wp-config from source', action='store_true')),
+            (['--user'], dict(help='WordPress admin user')),
+            (['--email'], dict(help='WordPress admin email')),
+            (['--pass'], dict(help='WordPress admin password', dest='wppass')),
         ]
 
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
-        # self.app.render((data), 'default.mustache')
-        # Check domain name validation
-        data = dict()
-        host, port = None, None
-        try:
-            stype, cache = detSitePar(vars(pargs))
-        except RuntimeError as e:
-            Log.debug(self, str(e))
-            Log.error(self, "Please provide valid options to creating site")
-
-        if stype is None and pargs.proxy:
-            stype, cache = 'proxy', ''
-            proxyinfo = pargs.proxy[0].strip()
-            if not proxyinfo:
-                Log.error(self, "Please provide proxy server host information")
-            proxyinfo = proxyinfo.split(':')
-            host = proxyinfo[0].strip()
-            port = '80' if len(proxyinfo) < 2 else proxyinfo[1].strip()
-        elif stype is None and not pargs.proxy:
-            stype, cache = 'html', 'basic'
-        elif stype and pargs.proxy:
-            Log.error(self, "proxy should not be used with other site types")
-
         if not pargs.site_name:
-            try:
-                while not pargs.site_name:
-                    # preprocessing before finalize site name
-                    pargs.site_name = (input('Enter site name : ')
-                                       .strip())
-            except IOError as e:
-                Log.debug(self, str(e))
-                Log.error(self, "Unable to input site name, Please try again!")
+            pargs.site_name = input('Enter source site name : ').strip()
+        if not pargs.newsite_name:
+            pargs.newsite_name = input('Enter destination site name : ').strip()
 
-        pargs.site_name = pargs.site_name.strip()
-        wo_domain = WODomain.validate(self, pargs.site_name)
-        wo_www_domain = "www.{0}".format(wo_domain)
-        (wo_domain_type, wo_root_domain) = WODomain.getlevel(
-            self, wo_domain)
-        if not wo_domain.strip():
-            Log.error(self, "Invalid domain name, "
-                      "Provide valid domain name")
+        src = WODomain.validate(self, pargs.site_name.strip())
+        dest = WODomain.validate(self, pargs.newsite_name.strip())
 
-        wo_site_webroot = WOVar.wo_webroot + wo_domain
+        if not check_domain_exists(self, src):
+            Log.error(self, f"source site {src} does not exist")
+        if check_domain_exists(self, dest):
+            Log.error(self, f"destination site {dest} already exists")
 
-        if check_domain_exists(self, wo_domain):
-            Log.error(self, "site {0} already exists".format(wo_domain))
-        elif os.path.isfile('/etc/nginx/sites-available/{0}'
-                            .format(wo_domain)):
-            Log.error(self, "Nginx configuration /etc/nginx/sites-available/"
-                      "{0} already exists".format(wo_domain))
+        wpuser = pargs.user or WOVar.wo_user
+        wpemail = pargs.email or WOVar.wo_email
+        wppass = pargs.wppass or getpass(f"Enter admin password for {wpuser}: ")
+        if not wppass:
+            Log.error(self, 'password cannot be empty')
 
-        if stype == 'proxy':
-            data = dict(
-                site_name=wo_domain, www_domain=wo_www_domain,
-                static=True, basic=False, wp=False,
-                wpfc=False, wpsc=False, wprocket=False, wpce=False,
-                multisite=False, wpsubdir=False, webroot=wo_site_webroot)
-            data['proxy'] = True
-            data['host'] = host
-            data['port'] = port
-            data['basic'] = True
+        dest_webroot = os.path.join(WOVar.wo_webroot, dest)
 
-        if pargs.php72 or pargs.php73 or pargs.php74:
-            data = dict(
-                site_name=wo_domain, www_domain=wo_www_domain,
-                static=False, basic=False,
-                wp=False, wpfc=False, wpsc=False, wprocket=False,
-                wpce=False, multisite=False,
-                wpsubdir=False, webroot=wo_site_webroot)
-            data['basic'] = True
+        src_info = getSiteInfo(self, src)
+        if not src_info:
+            Log.error(self, f"source site {src} does not exist")
 
-        if stype in ['html', 'php']:
-            data = dict(
-                site_name=wo_domain, www_domain=wo_www_domain,
-                static=True, basic=False, wp=False,
-                wpfc=False, wpsc=False, wprocket=False, wpce=False,
-                multisite=False, wpsubdir=False, webroot=wo_site_webroot)
+        php_key = ("php" + src_info.php_version).replace('.', '')
+        data = dict(site_name=dest, www_domain=f"www.{dest}", webroot=dest_webroot,
+                    static=False, basic=True, wp=False, wpfc=False, wpsc=False,
+                    wprocket=False, wpce=False, wpredis=False,
+                    multisite=False, wpsubdir=False, wo_php=php_key,
+                    **{'wp-user': wpuser, 'wp-email': wpemail, 'wp-pass': wppass})
 
-            if stype == 'php':
-                data['static'] = False
-                data['basic'] = True
+        stype = src_info.site_type
+        cache = src_info.cache_type if src_info.cache_type else 'basic'
 
-        elif stype in ['mysql', 'wp', 'wpsubdir', 'wpsubdomain']:
-
-            data = dict(
-                site_name=wo_domain, www_domain=wo_www_domain,
-                static=False, basic=True, wp=False, wpfc=False,
-                wpsc=False, wpredis=False, wprocket=False, wpce=False,
-                multisite=False, wpsubdir=False, webroot=wo_site_webroot,
-                wo_db_name='', wo_db_user='', wo_db_pass='',
-                wo_db_host='')
-
-            if stype in ['wp', 'wpsubdir', 'wpsubdomain']:
-                data['wp'] = True
-                data['basic'] = False
-                data[cache] = True
-                data['wp-user'] = pargs.user
-                data['wp-email'] = pargs.email
-                data['wp-pass'] = pargs.wppass
-                if stype in ['wpsubdir', 'wpsubdomain']:
-                    data['multisite'] = True
-                    if stype == 'wpsubdir':
-                        data['wpsubdir'] = True
-        else:
-            pass
-
-        data['php73'] = False
-        data['php74'] = False
-        data['php72'] = False
-
-        if data and pargs.php73:
-            data['php73'] = True
-            data['wo_php'] = 'php73'
-        elif data and pargs.php74:
-            data['php74'] = True
-            data['wo_php'] = 'php74'
-        elif data and pargs.php72:
-            data['php72'] = True
-            data['wo_php'] = 'php72'
-        else:
-            if self.app.config.has_section('php'):
-                config_php_ver = self.app.config.get(
-                    'php', 'version')
-                if config_php_ver == '7.2':
-                    data['php72'] = True
-                    data['wo_php'] = 'php72'
-                elif config_php_ver == '7.3':
-                    data['php73'] = True
-                    data['wo_php'] = 'php73'
-                elif config_php_ver == '7.4':
-                    data['php74'] = True
-                    data['wo_php'] = 'php74'
-            else:
-                data['php73'] = True
-                data['wo_php'] = 'php73'
-
-        if ((not pargs.wpfc) and (not pargs.wpsc) and
-            (not pargs.wprocket) and
-            (not pargs.wpce) and
-                (not pargs.wpredis)):
-            data['basic'] = True
-
-        if (cache == 'wpredis'):
-            cache = 'wpredis'
-            data['wpredis'] = True
+        if stype in ['wp', 'wpsubdir', 'wpsubdomain']:
+            data['wp'] = True
             data['basic'] = False
-            pargs.wpredis = True
+            data[cache] = True if cache != 'basic' else False
+            data['multisite'] = stype in ['wpsubdir', 'wpsubdomain']
+            if stype == 'wpsubdir':
+                data['wpsubdir'] = True
+        elif stype.startswith('php') or stype == 'php':
+            data['static'] = False
+            data['basic'] = True
+        else:
+            data['static'] = True
+            data['basic'] = False
 
-        # Check rerequired packages are installed or not
-        wo_auth = site_package_check(self, stype)
+        pre_run_checks(self)
+        setupdomain(self, data)
+        hashbucket(self)
+        addNewSite(self, dest, stype, cache, dest_webroot,
+                   php_version=src_info.php_version)
+        data = setupdatabase(self, data)
+        setupwordpress(self, data, vhostonly=True)
+        updateSiteInfo(self, dest, db_name=data['wo_db_name'],
+                       db_user=data['wo_db_user'],
+                       db_password=data['wo_db_pass'],
+                       db_host=data['wo_db_host'],
+                       php_version=src_info.php_version,
+                       stype=stype, cache=cache)
+        setwebrootpermissions(self, dest_webroot)
+        WOService.reload_service(self, 'nginx')
 
-        try:
-            pre_run_checks(self)
-        except SiteError as e:
-            Log.debug(self, str(e))
-            Log.error(self, "NGINX configuration check failed.")
+        conf_src = os.path.join(WOVar.wo_webroot, src, 'wp-config.php')
+        conf_dest = os.path.join(WOVar.wo_webroot, dest, 'wp-config.php')
+        src_db = _parse_db_config(conf_src)
+        dest_db = _parse_db_config(conf_dest)
 
-        try:
-            try:
-                # setup NGINX configuration, and webroot
-                setupdomain(self, data)
+        backup = f"/tmp/{src.replace('.', '_')}.sql"
+        dump_cmd = (
+            f"mariadb-dump --defaults-extra-file=/etc/mysql/conf.d/my.cnf "
+            f"--single-transaction --quick --add-drop-table --hex-blob {src_db['DB_NAME']} > {backup}"
+        )
+        WOShellExec.cmd_exec(self, dump_cmd)
+        import_cmd = (
+            f"mariadb --defaults-extra-file=/etc/mysql/conf.d/my.cnf {dest_db['DB_NAME']} < {backup}"
+        )
+        WOShellExec.cmd_exec(self, import_cmd)
 
-                # Fix Nginx Hashbucket size error
-                hashbucket(self)
-            except SiteError as e:
-                # call cleanup actions on failure
-                Log.info(self, Log.FAIL +
-                         "There was a serious error encountered...")
-                Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                doCleanupAction(self, domain=wo_domain,
-                                webroot=data['webroot'])
-                Log.debug(self, str(e))
-                Log.error(self, "Check the log for details: "
-                          "`tail /var/log/wo/wordops.log` "
-                          "and please try again")
+        src_root = os.path.join(WOVar.wo_webroot, src, 'htdocs/')
+        dest_root = os.path.join(WOVar.wo_webroot, dest, 'htdocs/')
+        WOFileUtils.rm(self, dest_root)
+        WOFileUtils.copyfiles(self, src_root.rstrip('/'), dest_root.rstrip('/'))
+        WOShellExec.cmd_exec(
+            self,
+            f"{WOVar.wo_wpcli_path} search-replace {src} {dest} --path={dest_root} --all-tables --allow-root",
+        )
+        setwebrootpermissions(self, dest_root.rstrip('/'))
 
-            if 'proxy' in data.keys() and data['proxy']:
-                addNewSite(self, wo_domain, stype, cache, wo_site_webroot)
-                # Service Nginx Reload
-                if not WOService.reload_service(self, 'nginx'):
-                    Log.info(self, Log.FAIL +
-                             "There was a serious error encountered...")
-                    Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                    doCleanupAction(self, domain=wo_domain)
-                    deleteSiteInfo(self, wo_domain)
-                    Log.error(self, "service nginx reload failed. "
-                              "check issues with `nginx -t` command")
-                    Log.error(self, "Check the log for details: "
-                              "`tail /var/log/wo/wordops.log` "
-                              "and please try again")
-                if wo_auth and len(wo_auth):
-                    for msg in wo_auth:
-                        Log.info(self, Log.ENDC + msg, log=False)
-                Log.info(self, "Successfully created site"
-                         " http://{0}".format(wo_domain))
-                return
+        if not pargs.new:
+            WOFileUtils.copyfile(self, conf_src, conf_dest)
+            with open(conf_dest, 'r') as f:
+                content = f.read()
+            content = re.sub(r"define\('DB_NAME',\s*'[^']*'\)",
+                             f"define('DB_NAME', '{dest_db['DB_NAME']}')", content)
+            content = re.sub(r"define\('DB_USER',\s*'[^']*'\)",
+                             f"define('DB_USER', '{dest_db['DB_USER']}')", content)
+            content = re.sub(r"define\('DB_PASSWORD',\s*'[^']*'\)",
+                             f"define('DB_PASSWORD', '{dest_db['DB_PASSWORD']}')", content)
+            content = re.sub(r"define\('DB_HOST',\s*'[^']*'\)",
+                             f"define('DB_HOST', '{dest_db['DB_HOST']}')", content)
+            with open(conf_dest, 'w') as f:
+                f.write(content)
+            WOFileUtils.chown(self, conf_dest, WOVar.wo_php_user, WOVar.wo_php_user)
 
-            if data['php72']:
-                php_version = "7.2"
-            elif data['php74']:
-                php_version = "7.4"
-            else:
-                php_version = "7.3"
-
-            addNewSite(self, wo_domain, stype, cache, wo_site_webroot,
-                       php_version=php_version)
-
-            # Setup database for MySQL site
-            if 'wo_db_name' in data.keys() and not data['wp']:
-                try:
-                    data = setupdatabase(self, data)
-                    # Add database information for site into database
-                    updateSiteInfo(self, wo_domain, db_name=data['wo_db_name'],
-                                   db_user=data['wo_db_user'],
-                                   db_password=data['wo_db_pass'],
-                                   db_host=data['wo_db_host'])
-                except SiteError as e:
-                    # call cleanup actions on failure
-                    Log.debug(self, str(e))
-                    Log.info(self, Log.FAIL +
-                             "There was a serious error encountered...")
-                    Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                    doCleanupAction(self, domain=wo_domain,
-                                    webroot=data['webroot'],
-                                    dbname=data['wo_db_name'],
-                                    dbuser=data['wo_db_user'],
-                                    dbhost=data['wo_db_host'])
-                    deleteSiteInfo(self, wo_domain)
-                    Log.error(self, "Check the log for details: "
-                              "`tail /var/log/wo/wordops.log` "
-                              "and please try again")
-
-                try:
-                    wodbconfig = open("{0}/wo-config.php"
-                                      .format(wo_site_webroot),
-                                      encoding='utf-8', mode='w')
-                    wodbconfig.write("<?php \ndefine('DB_NAME', '{0}');"
-                                     "\ndefine('DB_USER', '{1}'); "
-                                     "\ndefine('DB_PASSWORD', '{2}');"
-                                     "\ndefine('DB_HOST', '{3}');\n?>"
-                                     .format(data['wo_db_name'],
-                                             data['wo_db_user'],
-                                             data['wo_db_pass'],
-                                             data['wo_db_host']))
-                    wodbconfig.close()
-                    stype = 'mysql'
-                except IOError as e:
-                    Log.debug(self, str(e))
-                    Log.debug(self, "Error occured while generating "
-                              "wo-config.php")
-                    Log.info(self, Log.FAIL +
-                             "There was a serious error encountered...")
-                    Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                    doCleanupAction(self, domain=wo_domain,
-                                    webroot=data['webroot'],
-                                    dbname=data['wo_db_name'],
-                                    dbuser=data['wo_db_user'],
-                                    dbhost=data['wo_db_host'])
-                    deleteSiteInfo(self, wo_domain)
-                    Log.error(self, "Check the log for details: "
-                              "`tail /var/log/wo/wordops.log` "
-                              "and please try again")
-
-            # Setup WordPress if Wordpress site
-            if data['wp']:
-                vhostonly = bool(pargs.vhostonly)
-                try:
-                    wo_wp_creds = setupwordpress(self, data, vhostonly)
-                    # Add database information for site into database
-                    updateSiteInfo(self, wo_domain,
-                                   db_name=data['wo_db_name'],
-                                   db_user=data['wo_db_user'],
-                                   db_password=data['wo_db_pass'],
-                                   db_host=data['wo_db_host'])
-                except SiteError as e:
-                    # call cleanup actions on failure
-                    Log.debug(self, str(e))
-                    Log.info(self, Log.FAIL +
-                             "There was a serious error encountered...")
-                    Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                    doCleanupAction(self, domain=wo_domain,
-                                    webroot=data['webroot'],
-                                    dbname=data['wo_db_name'],
-                                    dbuser=data['wo_db_user'],
-                                    dbhost=data['wo_mysql_grant_host'])
-                    deleteSiteInfo(self, wo_domain)
-                    Log.error(self, "Check the log for details: "
-                              "`tail /var/log/wo/wordops.log` "
-                              "and please try again")
-
-            # Service Nginx Reload call cleanup if failed to reload nginx
-            if not WOService.reload_service(self, 'nginx'):
-                Log.info(self, Log.FAIL +
-                         "There was a serious error encountered...")
-                Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                doCleanupAction(self, domain=wo_domain,
-                                webroot=data['webroot'])
-                if 'wo_db_name' in data.keys():
-                    doCleanupAction(self, domain=wo_domain,
-                                    dbname=data['wo_db_name'],
-                                    dbuser=data['wo_db_user'],
-                                    dbhost=data['wo_mysql_grant_host'])
-                deleteSiteInfo(self, wo_domain)
-                Log.info(self, Log.FAIL + "service nginx reload failed."
-                         " check issues with `nginx -t` command.")
-                Log.error(self, "Check the log for details: "
-                          "`tail /var/log/wo/wordops.log` "
-                          "and please try again")
-
-            WOGit.add(self, ["/etc/nginx"],
-                      msg="{0} created with {1} {2}"
-                      .format(wo_www_domain, stype, cache))
-            # Setup Permissions for webroot
-            try:
-                setwebrootpermissions(self, data['webroot'])
-            except SiteError as e:
-                Log.debug(self, str(e))
-                Log.info(self, Log.FAIL +
-                         "There was a serious error encountered...")
-                Log.info(self, Log.FAIL + "Cleaning up afterwards...")
-                doCleanupAction(self, domain=wo_domain,
-                                webroot=data['webroot'])
-                if 'wo_db_name' in data.keys():
-                    print("Inside db cleanup")
-                    doCleanupAction(self, domain=wo_domain,
-                                    dbname=data['wo_db_name'],
-                                    dbuser=data['wo_db_user'],
-                                    dbhost=data['wo_mysql_grant_host'])
-                deleteSiteInfo(self, wo_domain)
-                Log.error(self, "Check the log for details: "
-                          "`tail /var/log/wo/wordops.log` and "
-                          "please try again")
-
-            if wo_auth and len(wo_auth):
-                for msg in wo_auth:
-                    Log.info(self, Log.ENDC + msg, log=False)
-
-            if data['wp'] and (not pargs.vhostonly):
-                Log.info(self, Log.ENDC + "WordPress admin user :"
-                         " {0}".format(wo_wp_creds['wp_user']), log=False)
-                Log.info(self, Log.ENDC + "WordPress admin password : {0}"
-                         .format(wo_wp_creds['wp_pass']), log=False)
-
-                display_cache_settings(self, data)
-
-            Log.info(self, "Successfully created site"
-                     " http://{0}".format(wo_domain))
-        except SiteError:
-            Log.error(self, "Check the log for details: "
-                      "`tail /var/log/wo/wordops.log` and please try again")
-
-        if pargs.letsencrypt:
-            acme_domains = []
-            data['letsencrypt'] = True
-            letsencrypt = True
-            Log.debug(self, "Going to issue Let's Encrypt certificate")
-            acmedata = dict(
-                acme_domains, dns=False, acme_dns='dns_cf',
-                dnsalias=False, acme_alias='', keylength='')
-            if self.app.config.has_section('letsencrypt'):
-                acmedata['keylength'] = self.app.config.get(
-                    'letsencrypt', 'keylength')
-            else:
-                acmedata['keylength'] = 'ec-384'
-            if pargs.dns:
-                Log.debug(self, "DNS validation enabled")
-                acmedata['dns'] = True
-                if not pargs.dns == 'dns_cf':
-                    Log.debug(self, "DNS API : {0}".format(pargs.dns))
-                    acmedata['acme_dns'] = pargs.dns
-            if pargs.dnsalias:
-                Log.debug(self, "DNS Alias enabled")
-                acmedata['dnsalias'] = True
-                acmedata['acme_alias'] = pargs.dnsalias
-
-            # detect subdomain and set subdomain variable
-            if pargs.letsencrypt == "subdomain":
-                Log.warn(
-                    self, 'Flag --letsencrypt=subdomain is '
-                    'deprecated and not required anymore.')
-                acme_subdomain = True
-                acme_wildcard = False
-            elif pargs.letsencrypt == "wildcard":
-                acme_wildcard = True
-                acme_subdomain = False
-                acmedata['dns'] = True
-            else:
-                if ((wo_domain_type == 'subdomain')):
-                    Log.debug(self, "Domain type = {0}"
-                              .format(wo_domain_type))
-                    acme_subdomain = True
-                else:
-                    acme_subdomain = False
-                    acme_wildcard = False
-
-            if acme_subdomain is True:
-                Log.info(self, "Certificate type : subdomain")
-                acme_domains = acme_domains + ['{0}'.format(wo_domain)]
-            elif acme_wildcard is True:
-                Log.info(self, "Certificate type : wildcard")
-                acme_domains = acme_domains + ['{0}'.format(wo_domain),
-                                               '*.{0}'.format(wo_domain)]
-            else:
-                Log.info(self, "Certificate type : domain")
-                acme_domains = acme_domains + ['{0}'.format(wo_domain),
-                                               'www.{0}'.format(wo_domain)]
-
-            if WOAcme.cert_check(self, wo_domain):
-                SSL.archivedcertificatehandle(self, wo_domain, acme_domains)
-            else:
-                if acme_subdomain is True:
-                    # check if a wildcard cert for the root domain exist
-                    Log.debug(self, "checkWildcardExist on *.{0}"
-                              .format(wo_root_domain))
-                    if SSL.checkwildcardexist(self, wo_root_domain):
-                        Log.info(self, "Using existing Wildcard SSL "
-                                 "certificate from {0} to secure {1}"
-                                 .format(wo_root_domain, wo_domain))
-                        Log.debug(self, "symlink wildcard "
-                                  "cert between {0} & {1}"
-                                  .format(wo_domain, wo_root_domain))
-                        # copy the cert from the root domain
-                        copyWildcardCert(self, wo_domain, wo_root_domain)
-                    else:
-                        # check DNS records before issuing cert
-                        if not acmedata['dns'] is True:
-                            if not pargs.force:
-                                if not WOAcme.check_dns(self, acme_domains):
-                                    Log.error(self,
-                                              "Aborting SSL "
-                                              "certificate issuance")
-                        Log.debug(self, "Setup Cert with acme.sh for {0}"
-                                  .format(wo_domain))
-                        if WOAcme.setupletsencrypt(
-                                self, acme_domains, acmedata):
-                            WOAcme.deploycert(self, wo_domain)
-                else:
-                    if not acmedata['dns'] is True:
-                        if not pargs.force:
-                            if not WOAcme.check_dns(self, acme_domains):
-                                Log.error(self,
-                                          "Aborting SSL certificate issuance")
-                    if WOAcme.setupletsencrypt(
-                            self, acme_domains, acmedata):
-                        WOAcme.deploycert(self, wo_domain)
-
-                if pargs.hsts:
-                    SSL.setuphsts(self, wo_domain)
-
-                SSL.httpsredirect(self, wo_domain, acme_domains, True)
-                SSL.siteurlhttps(self, wo_domain)
-                if not WOService.reload_service(self, 'nginx'):
-                    Log.error(self, "service nginx reload failed. "
-                              "check issues with `nginx -t` command")
-                Log.info(self, "Congratulations! Successfully Configured "
-                         "SSL on https://{0}".format(wo_domain))
-
-                # Add nginx conf folder into GIT
-                WOGit.add(self, ["{0}/conf/nginx".format(wo_site_webroot)],
-                          msg="Adding letsencrypts config of site: {0}"
-                          .format(wo_domain))
-                updateSiteInfo(self, wo_domain, ssl=letsencrypt)
+        WOFileUtils.rm(self, backup)
+        Log.info(self, f"Successfully cloned '{src}' → '{dest}'")
