@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "❌ Cleanup failed" >&2' ERR
 
 # ------------------------------------------------------------
 # Script to wire up a WebTonify site with its own PHP-FPM pool.
@@ -18,21 +19,34 @@ set -euo pipefail
 # https://www.youtube.com/watch?v=VOA_H08Bkws
 # ------------------------------------------------------------
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "Usage: $0 yourdomain.com [--del]" >&2
+# Isolate a domain with its own PHP-FPM pool
+# Check if the script is run with a domain argument
+# Usage: ./isolate.sh domain.tld
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 <domain>"
   exit 1
 fi
 
-DELETE_MODE=false
-if [[ ${2-} == "--del" ]]; then
-  DELETE_MODE=true
+# Must run as root
+if [[ $EUID -ne 0 ]]; then
+  echo "Error: this script must be run as root"
+  exit 1
 fi
 
+# check if WordOps is installed
+command -v wo >/dev/null || { echo "Error: wordops (wo) not installed"; exit 1; }
+
 DOMAIN="$1"
+# Check if VHOST exists
+if ! wo site info "$DOMAIN" &>/dev/null; then
+  echo "Error: vhost '$DOMAIN' not found"
+  exit 1
+fi
+
 SLUG="${DOMAIN//./-}"                 # relplace . with -
 SLUG="${SLUG,,}"                      # sub.example.com → sub-example-com
 
-PHPVER=$(php -r 'echo PHP_VERSION;' | cut -d. -f1-2)
+PHPVER=$(wo site info "${DOMAIN}" | grep -i 'PHP Version' | awk '{ print $NF }')
 PHPVER_STRIPPED=${PHPVER//./}
 
 PHP_FPM_DIR="/etc/php/${PHPVER}/fpm"
@@ -43,7 +57,7 @@ PHP_MASTER_CONF_FILE="${PHP_FPM_DIR}/php-fpm-${SLUG}.conf"
 PHP_MASTER_LOG_FILE=${PHP_LOG_DIR}/error.log
 
 PHP_POOL_SOCK="/run/php/php${PHPVER}-fpm-${SLUG}.sock"
-PHP_POOL_CONF_FILE="${PHP_FPM_DIR}/custom-pool.d/${SLUG}.conf"
+PHP_POOL_CONF_FILE="${PHP_FPM_DIR}/pool.d/${SLUG}.conf"
 PHP_POOL_ACCESS_LOG_FILE=${PHP_LOG_DIR}/access.log
 # PHP_POOL_ERROR_LOG_FILE=${PHP_LOG_DIR}/pool-error.log
 PHP_POOL_SLOW_LOG_FILE=${PHP_LOG_DIR}/slow.log
@@ -61,15 +75,9 @@ LOG_DIR="${WEBROOT}/logs"
 
 WPCLI_USER="wpcli-${SLUG}"
 
-SELFSIGNCERT_ROOT="/etc/ssl/selfsigned"
 TEMPLATE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 1) Must be root
-if (( EUID != 0 )); then
-  echo "Error: this script must be run as root" >&2
-  exit 1
-fi
-
+# 1) Ensure template directory exists
 if [[ ! -d "${TEMPLATE_DIR}" ]]; then
   echo "Error: TEMPLATE_DIR='${TEMPLATE_DIR}' not found" >&2
   exit 1
@@ -87,43 +95,8 @@ run_render() {
   fi
 }
 
-# cleanup function
-cleanup() {
-  echo "Cleaning up resources for ${DOMAIN}..."
-
-  systemctl stop "${SYSTEMD_UNIT}" || true
-  systemctl disable "${SYSTEMD_UNIT}" || true
-  systemctl daemon-reload
-
-  rm -f "${PHP_MASTER_CONF_FILE}"
-  rm -rf "${PHP_LOG_DIR}"
-  rm -f "${NGINXROOT}/sites-enabled/${DOMAIN}" \
-        "${NGINXROOT}/sites-available/${DOMAIN}"
-  rm -f "${NGINXROOT}/conf.d/upstream-${SLUG}.conf" \
-        "${NGINXROOT}/common/php${PHPVER_STRIPPED}-${SLUG}.conf" \
-        "${NGINXROOT}/common/wpcommon-php${PHPVER_STRIPPED}-${SLUG}.conf"
-
-  # remove nginx from php-fpm group and php-fpm user from wp-cli group
-  gpasswd -d www-data "${PHPFPM_USER}" || true
-  gpasswd -d "${PHPFPM_USER}" "${WPCLI_USER}" || true
-
-  # delete users and groups
-  userdel "${PHPFPM_USER}" || true
-  userdel "${WPCLI_USER}" || true
-  groupdel "${PHPFPM_USER}" || true
-  groupdel "${WPCLI_USER}" || true
-  echo "Done cleanup for ${DOMAIN}."
-  exit 0
-}
-
-# if delete mode, run cleanup and exit
-echo
-if $DELETE_MODE; then
-  cleanup
-fi
-
 # 2) Ensure directories exist
-mkdir -p "$WEBROOT" "$HTDOCS" "$LOG_DIR" "$PHP_LOG_DIR" "$PHP_FPM_DIR/custom-pool.d" /run/php $SELFSIGNCERT_ROOT
+mkdir -p "$WEBROOT" "$HTDOCS" "$LOG_DIR" "$PHP_LOG_DIR" "$PHP_FPM_DIR/pool.d" /run/php
 
 # 3) Create service accounts if missing
 if ! id "$WPCLI_USER" &>/dev/null; then
@@ -177,8 +150,7 @@ export \
   DOMAIN \
   HTDOCS \
   PHPVER_STRIPPED \
-  SLUG \
-  SELFSIGNCERT_ROOT
+  SLUG
 
 if [[ ! -f "${PHP_FPM_SYSTEMD_TPL}" ]]; then
   run_render '${PHPVER}' "${TEMPLATE_DIR}/php-fpm-systemd.tpl" "${PHP_FPM_SYSTEMD_TPL}"
@@ -196,21 +168,6 @@ run_render '${PHPFPM_USER} ${PHP_POOL_SOCK} ${PHP_POOL_ACCESS_LOG_FILE} ${PHP_PO
 rm -rf "${NGINXROOT}/sites-enabled/22222.conf"
 rm -rf "${WEBROOT}/22222"
 rm -rf "${WEBROOT}/html/index.nginx-debian.html"
-
-# 10) Catch-all deny
-if [[ ! -f "${SELFSIGNCERT_ROOT}/default.crt" ]]; then
-  openssl req -x509 -nodes -newkey rsa:2048 \
-    -days 365 \
-    -keyout ${SELFSIGNCERT_ROOT}/default.key \
-    -out ${SELFSIGNCERT_ROOT}/default.crt \
-    -subj "/CN=catch-all" \
-    -addext "subjectAltName=IP:127.0.0.1,IP:::1"
-fi
-
-if [[ ! -f "${NGINXROOT}/conf.d/default-deny.conf" ]]; then
-run_render '${SELFSIGNCERT_ROOT}' \
-  "${TEMPLATE_DIR}/nginx_default_deny.tpl" "${NGINXROOT}/conf.d/default-deny.conf"
-fi
 
 # 11) define individual php upstream for each website
 run_render '${PHPVER_STRIPPED} ${SLUG} ${PHP_POOL_SOCK}' \

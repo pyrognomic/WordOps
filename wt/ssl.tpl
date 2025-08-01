@@ -17,4 +17,4 @@ listen [::]:443 ssl;
 ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
 ssl_certificate_key     /etc/letsencrypt/live/${DOMAIN}/key.pem;
 ssl_trusted_certificate /etc/letsencrypt/live/${DOMAIN}/ca.pem;
-ssl_stapling_verify on;
+ssl_stapling_verify off;
