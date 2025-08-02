@@ -551,11 +551,8 @@ wo_install() {
         fi
     fi
 
-    if [ "$wo_branch" = "master" ]; then
-        /opt/wo/bin/pip install -U wordops --upgrade-strategy=eager
-    else
-        /opt/wo/bin/pip install -I "${WO_GIT_REPO}@${wo_branch}#egg=wordops" --upgrade-strategy=eager
-    fi
+    /opt/wo/bin/pip install -I "${WO_GIT_REPO}@${wo_branch}#egg=wordops" --upgrade-strategy=eager
+
     local python_venv
     python_venv=$(python3 -c "import sys; print(sys.version_info[1])")
     cp -rf /opt/wo/lib/python3."$python_venv"/site-packages/usr/* /usr/
