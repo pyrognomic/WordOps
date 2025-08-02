@@ -3,7 +3,7 @@
 # WordOps install and update script
 # -------------------------------------------------------------------------
 # Website:       https://wordops.net
-# GitHub:        https://github.com/WordOps/WordOps
+# GitHub:        https://github.com/pyrognomic/WordOps
 # Copyright (c) 2019-2025 - WordOps
 # This script is licensed under M.I.T
 # -------------------------------------------------------------------------
@@ -551,7 +551,7 @@ wo_install() {
     if [ "$wo_branch" = "master" ]; then
         /opt/wo/bin/pip install -U wordops --upgrade-strategy=eager
     else
-        /opt/wo/bin/pip install -I "git+https://github.com/WordOps/WordOps.git@$wo_branch#egg=wordops" --upgrade-strategy=eager
+        /opt/wo/bin/pip install -I "git+https://github.com/pyrognomic/WordOps.git@$wo_branch#egg=wordops" --upgrade-strategy=eager
     fi
     local python_venv
     python_venv=$(python3 -c "import sys; print(sys.version_info[1])")
@@ -616,7 +616,7 @@ wo_travis_install() {
         fi
         /opt/wo/bin/pip install -U . --upgrade-strategy=eager
     else
-        /opt/wo/bin/pip install -U "git+https://github.com/WordOps/WordOps.git@$wo_branch#egg=wordops" --upgrade-strategy=eager
+        /opt/wo/bin/pip install -U "git+https://github.com/pyrognomic/WordOps.git@$wo_branch#egg=wordops" --upgrade-strategy=eager
     fi
     cp -rf /opt/wo/lib/python3."$python_ver"/site-packages/usr/* /usr/
     cp -rn /opt/wo/lib/python3."$python_ver"/site-packages/etc/* /etc/
@@ -948,7 +948,7 @@ else
         echo
     elif [ "$wo_upgrade" = "1" ]; then
         wo_lib_echo "WordOps (wo) upgrade to $wo_version_new was successful!"
-        wo_lib_echo "Changelog is available on https://github.com/WordOps/WordOps/releases/tag/$wo_version_new"
+        wo_lib_echo "Changelog is available on https://github.com/pyrognomic/WordOps/releases/tag/$wo_version_new"
         echo
         version_to_check="v3.21"
         if echo "$wo_version_new" | grep -q "$version_to_check"; then
@@ -977,6 +977,6 @@ else
     wo_lib_echo "WordOps Documentation : https://docs.wordops.net"
     wo_lib_echo "WordOps Community Forum : https://community.wordops.net"
     echo
-    wo_lib_echo "Give WordOps a GitHub star : https://github.com/WordOps/WordOps/"
+    wo_lib_echo "Give WordOps a GitHub star : https://github.com/pyrognomic/WordOps/"
     echo
 fi

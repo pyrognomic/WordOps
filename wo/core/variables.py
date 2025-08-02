@@ -8,7 +8,7 @@ from socket import getfqdn
 from shutil import copy2
 
 from distro import distro, linux_distribution
-from sh import git
+import sh
 
 
 class WOVar():
@@ -28,6 +28,8 @@ class WOVar():
 
     # Current date and time of System
     wo_date = datetime.now().strftime('%d%b%Y-%H-%M-%S')
+
+    git = sh.Command('git')
 
     # WordOps core variables
     # linux distribution
