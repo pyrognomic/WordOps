@@ -849,7 +849,7 @@ wo_init() {
     if [ -f ./setup.py ]; then
         wo_version_new=$(grep "version='" setup.py | awk -F "'" '{print $2}' 2>&1)
     else
-        wo_version_new=$(curl -m 5 --retry 3 -sL https://api.github.com/repos/WordOps/WordOps/releases/latest 2>&1 | jq -r '.tag_name')
+        wo_version_new=$(curl -m 5 --retry 3 -sL https://api.github.com/repos/pyrognomic/WordOps/releases/latest 2>&1 | jq -r '.tag_name')
     fi
 
     echo ""
