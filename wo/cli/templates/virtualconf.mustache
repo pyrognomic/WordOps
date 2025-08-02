@@ -18,7 +18,6 @@ server {
 
     # include access control rules before any location block
     include /etc/nginx/acls/secure-{{site_name}}.conf;
-    include {{webroot}}/conf/nginx/*.conf;
 
     {{#alias}}
     location / {
@@ -49,11 +48,11 @@ server {
 
     {{^proxy}}
     {{^alias}}
-    
+
     {{^subsite}}
     root {{webroot}}/htdocs;
     {{/subsite}}
-    
+
     {{#subsite}}
     root {{subsiteof_webroot}}/htdocs;
     {{/subsite}}
@@ -70,5 +69,6 @@ server {
     {{#wpsubdir}}include common/wpsubdir.conf;{{/wpsubdir}}{{/static}}
     {{#wp}}include common/wpcommon-{{wo_php}}.conf;{{/wp}}
     include common/locations-wo.conf;{{/alias}}{{/proxy}}
+    include {{webroot}}/conf/nginx/*.conf;
 
 }
