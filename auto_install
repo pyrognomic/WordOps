@@ -3,7 +3,7 @@
 # WordOps install and update script
 # -------------------------------------------------------------------------
 # Website:       https://wordops.net
-# GitHub:        https://github.com/WordOps/WordOps
+# GitHub:        https://github.com/pyrognomic/wordops
 # Copyright (c) 2019-2025 - WordOps
 # This script is licensed under M.I.T
 # -------------------------------------------------------------------------
@@ -852,7 +852,7 @@ wo_init() {
     if [ -f ./setup.py ]; then
         wo_version_new=$(grep "version='" setup.py | awk -F "'" '{print $2}' 2>&1)
     else
-        wo_version_new=$(curl -m 5 --retry 3 -sL https://api.github.com/repos/WordOps/WordOps/releases/latest 2>&1 | jq -r '.tag_name')
+        wo_version_new=$(curl -m 5 --retry 3 -sL https://api.github.com/repos/pyrognomic/wordops/releases/latest 2>&1 | jq -r '.tag_name')
     fi
 
     echo ""
@@ -951,7 +951,7 @@ else
         echo
     elif [ "$wo_upgrade" = "1" ]; then
         wo_lib_echo "WordOps (wo) upgrade to $wo_version_new was successful!"
-        wo_lib_echo "Changelog is available on https://github.com/WordOps/WordOps/releases/tag/$wo_version_new"
+        wo_lib_echo "Changelog is available on https://github.com/pyrognomic/wordops/releases/tag/$wo_version_new"
         echo
         version_to_check="v3.21"
         if echo "$wo_version_new" | grep -q "$version_to_check"; then
@@ -980,6 +980,6 @@ else
     wo_lib_echo "WordOps Documentation : https://docs.wordops.net"
     wo_lib_echo "WordOps Community Forum : https://community.wordops.net"
     echo
-    wo_lib_echo "Give WordOps a GitHub star : https://github.com/WordOps/WordOps/"
+    wo_lib_echo "Give WordOps a GitHub star : https://github.com/pyrognomic/wordops/"
     echo
 fi
