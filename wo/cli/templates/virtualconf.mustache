@@ -16,6 +16,10 @@ server {
     access_log /var/log/nginx/{{site_name}}.access.log {{^wpredis}}{{^static}}rt_cache{{/static}}{{/wpredis}}{{#wpredis}}rt_cache_redis{{/wpredis}};
     error_log /var/log/nginx/{{site_name}}.error.log;
 
+    # include access control rules before any location block
+    include /etc/nginx/acls/secure-{{site_name}}.conf;
+    include {{webroot}}/conf/nginx/*.conf;
+
     {{#alias}}
     location / {
         return 301 https://{{alias_name}}$request_uri;
@@ -66,6 +70,5 @@ server {
     {{#wpsubdir}}include common/wpsubdir.conf;{{/wpsubdir}}{{/static}}
     {{#wp}}include common/wpcommon-{{wo_php}}.conf;{{/wp}}
     include common/locations-wo.conf;{{/alias}}{{/proxy}}
-    include {{webroot}}/conf/nginx/*.conf;
 
 }

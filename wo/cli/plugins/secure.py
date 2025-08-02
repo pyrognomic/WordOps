@@ -11,6 +11,8 @@ from wo.core.services import WOService
 from wo.core.shellexec import WOShellExec
 from wo.core.template import WOTemplate
 from wo.core.variables import WOVar
+from wo.core.domainvalidate import WODomain
+from wo.cli.plugins.site_functions import getSiteInfo
 
 
 def wo_secure_hook(app):
@@ -26,13 +28,10 @@ class WOSecureController(CementBaseController):
             'Secure command provide the ability to '
             'adjust settings for backend and to harden server security.')
         arguments = [
-            (['--auth'],
-                dict(help='secure backend authentification',
-                     action='store_true')),
-            (['--port'],
-                dict(help='set backend port', action='store_true')),
-            (['--ip'],
-                dict(help='set backend whitelisted ip', action='store_true')),
+            (['--domain'],
+                dict(help='secure a domain', action='store', nargs='?')),
+            (['--wl'],
+                dict(help='whitelist IPs for the domain', action='store', nargs='+')),
             (['--sshport'], dict(
                 help='set custom ssh port', action='store_true')),
             (['--ssh'], dict(
@@ -52,111 +51,98 @@ class WOSecureController(CementBaseController):
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
-        if pargs.auth:
-            self.secure_auth()
-        if pargs.port:
-            self.secure_port()
-        if pargs.ip:
-            self.secure_ip()
+        if pargs.wl and not pargs.domain:
+            Log.error(self, "--wl requires --domain")
+        if pargs.domain:
+            self.secure_domain()
         if pargs.sshport:
             self.secure_ssh_port()
         if pargs.ssh:
             self.secure_ssh()
 
     @expose(hide=True)
-    def secure_auth(self):
-        """This function secures authentication"""
-        WOGit.add(self, ["/etc/nginx"],
-                  msg="Add Nginx to into Git")
+    def secure_domain(self):
+        """Secure a domain with HTTP auth or IP whitelisting"""
         pargs = self.app.pargs
+        if not pargs.domain:
+            Log.error(self, "Please provide a domain name with --domain option")
+        wo_domain = WODomain.validate(self, pargs.domain)
+        site_info = getSiteInfo(self, wo_domain)
+        if not site_info:
+            Log.error(self, "site {0} does not exist".format(wo_domain))
+
+        webroot = site_info.site_path
+        wp_site = 'wp' in site_info.site_type
+
+        acl_dir = '/etc/nginx/acls'
+        os.makedirs(acl_dir, exist_ok=True)
+        snippet = os.path.join(acl_dir, f'secure-{wo_domain}.conf')
+        vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
+
+        if pargs.wl:
+            data = dict(is_wp=wp_site, ips=pargs.wl)
+            WOTemplate.deploy(self, snippet, 'secure.mustache', data)
+            self._ensure_acl_include(vhost_path, webroot, wo_domain)
+            WOGit.add(self, ['/etc/nginx'], msg=f"Whitelisted IPs for {wo_domain}")
+            if not WOService.reload_service(self, 'nginx'):
+                Log.error(self, "service nginx reload failed. check issues with `nginx -t` command")
+            Log.info(self, f"Successfully secured {wo_domain} with IP whitelist")
+            return
+
         passwd = RANDOM.long(self)
         if not pargs.user_input:
-            username = input("Provide HTTP authentication user "
-                             "name [{0}] :".format(WOVar.wo_user))
-            pargs.user_input = username
+            username = input("Provide HTTP authentication user name [{0}] :".format(WOVar.wo_user))
             if username == "":
-                pargs.user_input = WOVar.wo_user
-        if not pargs.user_pass:
-            password = getpass.getpass("Provide HTTP authentication "
-                                       "password [{0}] :".format(passwd))
-            pargs.user_pass = password
-            if password == "":
-                pargs.user_pass = passwd
-        Log.debug(self, "printf username:"
-                  "$(openssl passwd --apr1 "
-                  "password 2> /dev/null)\n\""
-                  "> /etc/nginx/htpasswd-wo 2>/dev/null")
-        WOShellExec.cmd_exec(self, "printf \"{username}:"
-                             "$(openssl passwd -apr1 "
-                             "{password} 2> /dev/null)\n\""
-                             "> /etc/nginx/htpasswd-wo 2>/dev/null"
-                             .format(username=pargs.user_input,
-                                     password=pargs.user_pass),
-                             log=False)
-        WOGit.add(self, ["/etc/nginx"],
-                  msg="Adding changed secure auth into Git")
-
-    @expose(hide=True)
-    def secure_port(self):
-        """This function Secures port"""
-        WOGit.add(self, ["/etc/nginx"],
-                  msg="Add Nginx to into Git")
-        pargs = self.app.pargs
-        if pargs.user_input:
-            while ((not pargs.user_input.isdigit()) and
-                   (not pargs.user_input < 65536)):
-                Log.info(self, "Please enter a valid port number ")
-                pargs.user_input = input("WordOps "
-                                         "admin port [22222]:")
+                username = WOVar.wo_user
         else:
-            port = input("WordOps admin port [22222]:")
-            if port == "":
-                port = 22222
-            while ((not port.isdigit()) and (not port != "") and
-                   (not port < 65536)):
-                Log.info(self, "Please Enter valid port number :")
-                port = input("WordOps admin port [22222]:")
-            pargs.user_input = port
-        data = dict(release=WOVar.wo_version,
-                    port=pargs.user_input, webroot='/var/www/')
-        WOTemplate.deploy(
-            self, '/etc/nginx/sites-available/22222',
-            '22222.mustache', data)
-        WOGit.add(self, ["/etc/nginx"],
-                  msg="Adding changed secure port into Git")
+            username = pargs.user_input
+
+        if not pargs.user_pass:
+            password = getpass.getpass("Provide HTTP authentication password [{0}] :".format(passwd))
+            if password == "":
+                password = passwd
+        else:
+            password = pargs.user_pass
+
+        htpasswd_file = os.path.join(acl_dir, f'htpasswd-{wo_domain}')
+        WOShellExec.cmd_exec(
+            self,
+            "printf \"{user}:$(openssl passwd -apr1 {pw} 2> /dev/null)\\n\" > {path} 2>/dev/null".format(
+                user=username, pw=password, path=htpasswd_file),
+            log=False)
+
+        data = dict(is_wp=wp_site, htpasswd=htpasswd_file)
+        WOTemplate.deploy(self, snippet, 'secure.mustache', data)
+        self._ensure_acl_include(vhost_path, webroot, wo_domain)
+        WOGit.add(self, ['/etc/nginx'], msg=f"Secured {wo_domain} with basic auth")
+
         if not WOService.reload_service(self, 'nginx'):
-            Log.error(self, "service nginx reload failed. "
-                      "check issues with `nginx -t` command")
-        Log.info(self, "Successfully port changed {port}"
-                 .format(port=pargs.user_input))
+            Log.error(self, "service nginx reload failed. check issues with `nginx -t` command")
 
-    @expose(hide=True)
-    def secure_ip(self):
-        """IP whitelisting"""
-        if os.path.exists('/etc/nginx'):
-            WOGit.add(self, ["/etc/nginx"],
-                      msg="Add Nginx to into Git")
-        pargs = self.app.pargs
-        if not pargs.user_input:
-            ip = input("Enter the comma separated IP addresses "
-                       "to white list [127.0.0.1]:")
-            pargs.user_input = ip
-        try:
-            user_ip = pargs.user_input.strip().split(',')
-        except Exception as e:
-            Log.debug(self, "{0}".format(e))
-            user_ip = ['127.0.0.1']
-        for ip_addr in user_ip:
-            if not ("exist_ip_address " + ip_addr in open('/etc/nginx/common/'
-                                                          'acl.conf').read()):
-                WOShellExec.cmd_exec(self, "sed -i "
-                                     "\"/deny/i allow {whitelist_address}\;\""
-                                     " /etc/nginx/common/acl.conf"
-                                     .format(whitelist_address=ip_addr))
-        WOGit.add(self, ["/etc/nginx"],
-                  msg="Adding changed secure ip into Git")
+        Log.info(self, f"Successfully secured {wo_domain}")
 
-        Log.info(self, "Successfully added IP address in acl.conf file")
+    def _ensure_acl_include(self, vhost_path, webroot, domain):
+        acl_include = f"    include /etc/nginx/acls/secure-{domain}.conf;\n"
+        include_marker = f"include {webroot}/conf/nginx/*.conf;"
+        if not os.path.exists(vhost_path):
+            return
+        with open(vhost_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        if any(acl_include.strip() == line.strip() for line in lines):
+            return
+        for i, line in enumerate(lines):
+            if include_marker in line:
+                lines.insert(i, acl_include)
+                break
+        else:
+            for i, line in enumerate(lines):
+                if line.strip().startswith('location'):
+                    lines.insert(i, acl_include)
+                    break
+            else:
+                lines.append(acl_include)
+        with open(vhost_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
 
     @expose(hide=True)
     def secure_ssh(self):
