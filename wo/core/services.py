@@ -126,38 +126,49 @@ class WOService():
             if service_name in ['nginx']:
                 # Check Nginx configuration before executing command
                 Log.wait(self, "Testing Nginx configuration ")
-                sub = subprocess.Popen('nginx -t', stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, shell=True)
-                output, error_output = sub.communicate()
-                if 'emerg' not in str(error_output):
-                    Log.valide(self, "Testing Nginx configuration ")
-                    Log.wait(self, "Reloading Nginx")
-                    service_cmd = ('service {0} reload'.format(service_name))
-                    retcode = subprocess.getstatusoutput(service_cmd)
-                    if retcode[0] == 0:
-                        Log.valide(self, "Reloading Nginx")
-                        return True
-                    else:
-                        Log.failed(self, "Testing Nginx configuration ")
-                        return False
-            else:
-                service_cmd = ('service {0} reload'.format(service_name))
-                Log.wait(self, "Reloading {0:10}".format(
-                    service_name))
-                retcode = subprocess.getstatusoutput(service_cmd)
-                if retcode[0] == 0:
-                    Log.valide(self, "Reloading {0:10}".format(
-                        service_name))
+                try:
+                    subprocess.run(
+                        ["nginx", "-t"],
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                except subprocess.CalledProcessError as e:
+                    # on failure, log the stderr
+                    Log.failed(self, "Testing Nginx configuration ")
+                    Log.error(self, f"Nginx test failed:\n{e.stderr.strip()}")
+                    return False
+
+                # continue if test passes without errors
+                Log.valide(self, "Testing Nginx configuration ")
+                Log.wait(self, "Reloading Nginx")
+
+                # reload the service
+                retcode, out = subprocess.getstatusoutput(f"service nginx reload")
+                if retcode == 0:
+                    Log.valide(self, "Reloading Nginx")
                     return True
                 else:
-                    Log.debug(self, "{0}".format(retcode[1]))
-                    Log.failed(self, "Reloading {0:10}".format(
-                        service_name))
+                    Log.failed(self, "Reloading Nginx")
+                    Log.error(self, f"Reload error:\n{out.strip()}")
                     return False
+
+            else:
+                # non-nginx
+                Log.wait(self, f"Reloading {service_name:10}")
+                retcode, out = subprocess.getstatusoutput(f"service {service_name} reload")
+                if retcode == 0:
+                    Log.valide(self, f"Reloading {service_name:10}")
+                    return True
+                else:
+                    Log.failed(self, f"Reloading {service_name:10}")
+                    Log.debug(self, out)
+                    return False
+
         except OSError as e:
-            Log.debug(self, "{0}".format(e))
-            Log.error(self, "\nFailed to reload service {0}"
-                      .format(service_name))
+            Log.debug(self, str(e))
+            Log.error(self, f"Failed to reload service {service_name}")
+            return False
 
     def get_service_status(self, service_name):
 
