@@ -164,11 +164,6 @@ run_render '${PHP_MASTER_PID} ${PHP_MASTER_LOG_FILE} ${PHP_POOL_CONF_FILE}' \
 run_render '${PHPFPM_USER} ${PHP_POOL_SOCK} ${PHP_POOL_ACCESS_LOG_FILE} ${PHP_POOL_SLOW_LOG_FILE} ${SLUG} ${WEBROOT}' \
   "${TEMPLATE_DIR}/php-fpm-pool.tpl" "${PHP_POOL_CONF_FILE}"
 
-# 9) WebTonify admin cleanup
-rm -rf "${NGINXROOT}/sites-enabled/22222.conf"
-rm -rf "${WEBROOT}/22222"
-rm -rf "${WEBROOT}/html/index.nginx-debian.html"
-
 # 11) define individual php upstream for each website
 run_render '${PHPVER_STRIPPED} ${SLUG} ${PHP_POOL_SOCK}' \
   "${TEMPLATE_DIR}/nginx_upstream.tpl" "${NGINXROOT}/conf.d/upstream-${SLUG}.conf"
