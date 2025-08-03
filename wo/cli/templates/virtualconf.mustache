@@ -16,6 +16,10 @@ server {
     access_log /var/log/nginx/{{site_name}}.access.log {{^wpredis}}{{^static}}rt_cache{{/static}}{{/wpredis}}{{#wpredis}}rt_cache_redis{{/wpredis}};
     error_log /var/log/nginx/{{site_name}}.error.log;
 
+    # acl start
+
+    # acl end
+
     {{#alias}}
     location / {
         return 301 https://{{alias_name}}$request_uri;
