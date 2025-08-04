@@ -1030,6 +1030,16 @@ class WOSiteUpdateController(CementBaseController):
                          "Check the log for details: "
                          "`tail /var/log/wo/wordops.log` and please try again")
                 return 1
+        # Configure php-fpm pool for the site
+        try:
+            setup_php_fpm(self, data)
+        except SiteError as e:
+            Log.debug(self, str(e))
+            Log.info(self, Log.FAIL + "Update site failed.",
+                     "Check the log for details: ",
+                     "`tail /var/log/wo/wordops.log` and please try again")
+            return 1
+
 
         # Service Nginx Reload
         if not WOService.reload_service(self, 'nginx'):
@@ -1041,7 +1051,9 @@ class WOSiteUpdateController(CementBaseController):
                   .format(wo_www_domain, stype, cache))
         # Setup Permissions for webroot
         try:
-            setwebrootpermissions(self, data['webroot'])
+            setwebrootpermissions(self, data['webroot'],
+                                  data.get('php_fpm_user',
+                                           WOVar.wo_php_user))
         except SiteError as e:
             Log.debug(self, str(e))
             Log.info(self, Log.FAIL + "Update site failed."
