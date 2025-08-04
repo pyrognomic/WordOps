@@ -5,6 +5,7 @@ from wo.cli.plugins.site_functions import (
     detSitePar, check_domain_exists, site_package_check,
     pre_run_checks, setupdomain, SiteError,
     doCleanupAction, setupdatabase, setupwordpress, setwebrootpermissions,
+    setup_php_fpm,
     display_cache_settings, copyWildcardCert)
 from wo.cli.plugins.sitedb import (addNewSite, deleteSiteInfo,
                                    updateSiteInfo, getSiteInfo)
@@ -304,6 +305,12 @@ class WOSiteCreateController(CementBaseController):
             data['basic'] = False
             pargs.wpredis = True
 
+        # Define php-fpm variables for templates
+        data['pool_name'] = wo_domain.replace('.', '-').lower()
+        if 'wo_php' in data:
+            data['php_ver'] = data['wo_php'].replace('php', '')
+            data['php_fpm_user'] = f"php-{data['pool_name']}"
+
         # Check rerequired packages are installed or not
         wo_auth = site_package_check(self, stype)
 
@@ -482,6 +489,26 @@ class WOSiteCreateController(CementBaseController):
                               "and please try again")
 
             # Service Nginx Reload call cleanup if failed to reload nginx
+            # Configure php-fpm pool for the site
+            try:
+                setup_php_fpm(self, data)
+            except SiteError as e:
+                Log.debug(self, str(e))
+                Log.info(self, Log.FAIL +
+                         "There was a serious error encountered...")
+                Log.info(self, Log.FAIL + "Cleaning up afterwards...")
+                doCleanupAction(self, domain=wo_domain,
+                                webroot=data['webroot'])
+                if 'wo_db_name' in data.keys():
+                    doCleanupAction(self, domain=wo_domain,
+                                    dbname=data['wo_db_name'],
+                                    dbuser=data['wo_db_user'],
+                                    dbhost=data['wo_mysql_grant_host'])
+                deleteSiteInfo(self, wo_domain)
+                Log.error(self, "Check the log for details: "
+                          "`tail /var/log/wo/wordops.log` "
+                          "and please try again")
+
             if not WOService.reload_service(self, 'nginx'):
                 Log.info(self, Log.FAIL +
                          "There was a serious error encountered...")
@@ -505,7 +532,9 @@ class WOSiteCreateController(CementBaseController):
                       .format(wo_www_domain, stype, cache))
             # Setup Permissions for webroot
             try:
-                setwebrootpermissions(self, data['webroot'])
+                setwebrootpermissions(self, data['webroot'],
+                                      data.get('php_fpm_user',
+                                               WOVar.wo_php_user))
             except SiteError as e:
                 Log.debug(self, str(e))
                 Log.info(self, Log.FAIL +
