@@ -551,11 +551,6 @@ class WOSiteUpdateController(CementBaseController):
         data['pool_name'] = slug
         data['php_ver'] = new_php_ver
 
-        # Define php-fpm variables for templates
-        data['pool_name'] = wo_domain.replace('.', '-').lower()
-        if 'wo_php' in data:
-            data['php_ver'] = data['wo_php'].replace('php', '')
-
         wo_auth = site_package_check(self, stype)
         data['wo_db_name'] = check_site.db_name
         data['wo_db_user'] = check_site.db_user

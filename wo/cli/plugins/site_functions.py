@@ -196,7 +196,7 @@ def setup_php_fpm(self, data):
         raise SiteError('php-fpm setup failed')
     else:
         Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
-        
+
 def cleanup_php_fpm(self, slug, old_php_ver, old_php_version):
     """Remove old php-fpm configuration for a site"""
     Log.info(self, 'Removing old PHP-FPM config\t', end='')
