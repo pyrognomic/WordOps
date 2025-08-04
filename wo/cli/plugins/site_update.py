@@ -10,7 +10,8 @@ from wo.cli.plugins.site_functions import (
     setupdatabase, setupwordpress, setwebrootpermissions,
     display_cache_settings, copyWildcardCert,
     updatewpuserpassword, setupngxblocker, setupwp_plugin,
-    setupwordpressnetwork, installwp_plugin, sitebackup, uninstallwp_plugin)
+    setupwordpressnetwork, installwp_plugin, sitebackup,
+    uninstallwp_plugin, cleanup_php_fpm)
 from wo.cli.plugins.sitedb import (getAllsites,
                                    getSiteInfo, updateSiteInfo)
 from wo.core.acme import WOAcme
@@ -193,6 +194,7 @@ class WOSiteUpdateController(CementBaseController):
             oldcachetype = check_site.cache_type
             check_ssl = check_site.is_ssl
             check_php_version = check_site.php_version
+            orig_php_version = check_php_version
 
         if ((pargs.password or pargs.hsts or
              pargs.ngxblocker or pargs.letsencrypt == 'renew') and not (
@@ -539,6 +541,15 @@ class WOSiteUpdateController(CementBaseController):
         if not data:
             Log.error(self, "Cannot update {0}, Invalid Options"
                       .format(wo_domain))
+        slug = wo_domain.replace('.', '-').lower()
+        old_php_ver = orig_php_version.replace('.', '')
+        new_php_ver = check_php_version.replace('.', '')
+        if new_php_ver != old_php_ver:
+            cleanup_php_fpm(self, slug, old_php_ver, orig_php_version)
+
+        # Define php-fpm variables for templates
+        data['pool_name'] = slug
+        data['php_ver'] = new_php_ver
 
         # Define php-fpm variables for templates
         data['pool_name'] = wo_domain.replace('.', '-').lower()

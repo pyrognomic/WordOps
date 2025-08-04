@@ -196,7 +196,35 @@ def setup_php_fpm(self, data):
         raise SiteError('php-fpm setup failed')
     else:
         Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
+        
+def cleanup_php_fpm(self, slug, old_php_ver, old_php_version):
+    """Remove old php-fpm configuration for a site"""
+    Log.info(self, 'Removing old PHP-FPM config\t', end='')
+    try:
+        service = f'php{old_php_ver}-fpm@{slug}'
+        WOService.stop_service(self, service)
+        WOShellExec.cmd_exec(self, f'systemctl disable {service}')
 
+        paths = [
+            f'/etc/systemd/system/php{old_php_ver}-fpm@.service',
+            f'/etc/php/{old_php_version}/fpm/php-fpm-{slug}.conf',
+            f'/etc/php/{old_php_version}/fpm/pool.d/{slug}.conf',
+            f'/var/log/php/{old_php_ver}/{slug}',
+            f'/run/php/php{old_php_ver}-fpm-{slug}.sock',
+            f'/run/php/php{old_php_ver}-fpm-{slug}.pid',
+        ]
+        for path in paths:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.isfile(path):
+                os.remove(path)
+
+        WOShellExec.cmd_exec(self, 'systemctl daemon-reload')
+    except Exception as e:
+        Log.debug(self, str(e))
+        raise SiteError('php-fpm cleanup failed')
+    else:
+        Log.info(self, '[' + Log.ENDC + 'Done' + Log.OKBLUE + ']')
 
 def setupdatabase(self, data):
     wo_domain_name = data['site_name']
