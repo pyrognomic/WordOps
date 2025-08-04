@@ -8,7 +8,7 @@ location / {
 location ~ \.php$ {
     try_files $uri =404;
     include fastcgi_params;
-    fastcgi_pass {{upstream}};
+    fastcgi_pass unix:/run/php/php${php_ver}-fpm-${pool_name}.sock;
 }
 location ~ /wp-content/cache/cache-enabler/*\.html$ {
     etag on;

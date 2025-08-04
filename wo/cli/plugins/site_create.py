@@ -304,6 +304,11 @@ class WOSiteCreateController(CementBaseController):
             data['basic'] = False
             pargs.wpredis = True
 
+        # Define php-fpm variables for templates
+        data['pool_name'] = wo_domain.replace('.', '-').lower()
+        if 'wo_php' in data:
+            data['php_ver'] = data['wo_php'].replace('php', '')
+
         # Check rerequired packages are installed or not
         wo_auth = site_package_check(self, stype)
 
