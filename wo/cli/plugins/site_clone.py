@@ -5,7 +5,7 @@ from getpass import getpass
 from cement.core.controller import CementBaseController, expose
 from wo.cli.plugins.site_functions import (
     check_domain_exists, pre_run_checks, setupdomain,
-    setupdatabase, setupwordpress, setwebrootpermissions)
+    setupdatabase, setupwordpress, setwebrootpermissions, setup_php_fpm)
 from wo.cli.plugins.sitedb import addNewSite, updateSiteInfo, getSiteInfo
 from wo.core.domainvalidate import WODomain
 from wo.core.logging import Log
@@ -82,6 +82,9 @@ class WOSiteCloneController(CementBaseController):
                     wprocket=False, wpce=False, wpredis=False,
                     multisite=False, wpsubdir=False, wo_php=php_key,
                     **{'wp-user': wpuser, 'wp-email': wpemail, 'wp-pass': wppass})
+        data['pool_name'] = dest.replace('.', '-').lower()
+        data['php_ver'] = php_key.replace('php', '')
+        data['php_fpm_user'] = f"php-{data['pool_name']}"
 
         stype = src_info.site_type
         cache = src_info.cache_type if src_info.cache_type else 'basic'
@@ -113,7 +116,8 @@ class WOSiteCloneController(CementBaseController):
                        db_host=data['wo_db_host'],
                        php_version=src_info.php_version,
                        stype=stype, cache=cache)
-        setwebrootpermissions(self, dest_webroot)
+        setup_php_fpm(self, data)
+        setwebrootpermissions(self, dest_webroot, data['php_fpm_user'])
         WOService.reload_service(self, 'nginx')
 
         conf_src = os.path.join(WOVar.wo_webroot, src, 'wp-config.php')
@@ -140,7 +144,7 @@ class WOSiteCloneController(CementBaseController):
             self,
             f"{WOVar.wo_wpcli_path} search-replace {src} {dest} --path={dest_root} --all-tables --allow-root",
         )
-        setwebrootpermissions(self, dest_root.rstrip('/'))
+        setwebrootpermissions(self, dest_root.rstrip('/'), data['php_fpm_user'])
 
         if not pargs.new:
             WOFileUtils.copyfile(self, conf_src, conf_dest)

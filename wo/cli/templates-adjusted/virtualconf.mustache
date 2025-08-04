@@ -69,6 +69,7 @@ server {
     {{^static}}
     set $php_ver {{wo-php}};
     set $pool_name {{pool-name}};
+    {{#wpredis}}set $redis_addr 127.0.0.1:6379;{{/wpredis}}
     include {{#basic}}common/php.conf;{{/basic}}{{#wpfc}}common/wpfc.conf;{{/wpfc}}{{#wpsc}}common/wpsc.conf;{{/wpsc}}{{#wpredis}}common/redis.conf;{{/wpredis}}{{#wprocket}}common/wprocket.conf;{{/wprocket}}{{#wpce}}common/wpce.conf;{{/wpce}}
     {{#wpsubdir}}include common/wpsubdir.conf;{{/wpsubdir}}
     {{/static}}

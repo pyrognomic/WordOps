@@ -164,13 +164,6 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                 WOFileUtils.textappend(self, '/etc/nginx/proxy_params',
                                        'proxy_set_header X-Forwarded-Port $server_port;\n')
             try:
-                data = dict(php="9000", debug="9001",
-                            php7="9070", debug7="9170",
-                            release=WOVar.wo_version)
-                WOTemplate.deploy(
-                    self, '{0}/upstream.conf'.format(ngxcnf),
-                    'upstream.mustache', data, overwrite=True)
-
                 data = dict(phpconf=(
                     bool(WOAptGet.is_installed(self, 'php7.2-fpm'))),
                     release=WOVar.wo_version)
@@ -634,18 +627,6 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                     self, "Configuring php{0}-fpm".format(php_version[0]))
                 WOGit.add(self, ["/etc/php"], msg="Adding PHP into Git")
 
-            if os.path.exists('/etc/nginx/conf.d/upstream.conf'):
-                if not WOFileUtils.grepcheck(
-                        self, '/etc/nginx/conf.d/upstream.conf',
-                        'php{0}'.format(php_short)):
-                    data = dict(php="9000", debug="9001",
-                                php7="9070", debug7="9170",
-                                php8="9080", debug8="9180",
-                                release=WOVar.wo_version)
-                    WOTemplate.deploy(
-                        self, '/etc/nginx/conf.d/upstream.conf',
-                        'upstream.mustache', data, True)
-                    WOConf.nginxcommon(self)
 
         # create mysql config if it doesn't exist
         if "mariadb-server" in apt_packages:
@@ -877,19 +858,8 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                 Log.valide(self, "Configuring UFW")
             else:
                 Log.info(self, "UFW is already installed and enabled")
-
         # Redis configuration
         if "redis-server" in apt_packages:
-            if os.path.isfile("/etc/nginx/conf.d/upstream.conf"):
-                if not WOFileUtils.grep(self, "/etc/nginx/conf.d/"
-                                        "upstream.conf",
-                                        "redis"):
-                    with open("/etc/nginx/conf.d/upstream.conf",
-                              "a") as redis_file:
-                        redis_file.write("upstream redis {\n"
-                                         "    server 127.0.0.1:6379;\n"
-                                         "    keepalive 10;\n}\n")
-
             if os.path.isfile("/etc/nginx/nginx.conf"):
                 if not os.path.isfile("/etc/nginx/conf.d/redis.conf"):
                     with open("/etc/nginx/conf.d/redis.conf",
