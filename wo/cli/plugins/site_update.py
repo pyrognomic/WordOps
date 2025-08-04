@@ -540,6 +540,11 @@ class WOSiteUpdateController(CementBaseController):
             Log.error(self, "Cannot update {0}, Invalid Options"
                       .format(wo_domain))
 
+        # Define php-fpm variables for templates
+        data['pool_name'] = wo_domain.replace('.', '-').lower()
+        if 'wo_php' in data:
+            data['php_ver'] = data['wo_php'].replace('php', '')
+
         wo_auth = site_package_check(self, stype)
         data['wo_db_name'] = check_site.db_name
         data['wo_db_user'] = check_site.db_user
@@ -1025,6 +1030,16 @@ class WOSiteUpdateController(CementBaseController):
                          "Check the log for details: "
                          "`tail /var/log/wo/wordops.log` and please try again")
                 return 1
+        # Configure php-fpm pool for the site
+        try:
+            setup_php_fpm(self, data)
+        except SiteError as e:
+            Log.debug(self, str(e))
+            Log.info(self, Log.FAIL + "Update site failed.",
+                     "Check the log for details: ",
+                     "`tail /var/log/wo/wordops.log` and please try again")
+            return 1
+
 
         # Service Nginx Reload
         if not WOService.reload_service(self, 'nginx'):
@@ -1036,7 +1051,9 @@ class WOSiteUpdateController(CementBaseController):
                   .format(wo_www_domain, stype, cache))
         # Setup Permissions for webroot
         try:
-            setwebrootpermissions(self, data['webroot'])
+            setwebrootpermissions(self, data['webroot'],
+                                  data.get('php_fpm_user',
+                                           WOVar.wo_php_user))
         except SiteError as e:
             Log.debug(self, str(e))
             Log.info(self, Log.FAIL + "Update site failed."
