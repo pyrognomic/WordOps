@@ -66,9 +66,14 @@ server {
     }
     {{/static}}
 
-    {{^static}}include {{#basic}}common/{{wo_php}}.conf;{{/basic}}{{#wpfc}}common/wpfc-{{wo_php}}.conf;{{/wpfc}}{{#wpsc}}common/wpsc-{{wo_php}}.conf;{{/wpsc}}{{#wpredis}}common/redis-{{wo_php}}.conf;{{/wpredis}}{{#wprocket}}common/wprocket-{{wo_php}}.conf;{{/wprocket}}{{#wpce}}common/wpce-{{wo_php}}.conf;{{/wpce}}
-    {{#wpsubdir}}include common/wpsubdir.conf;{{/wpsubdir}}{{/static}}
-    {{#wp}}include common/wpcommon-{{wo_php}}.conf;{{/wp}}
+    {{^static}}
+    set $php_ver {{php_ver}};
+    set $pool_name {{pool_name}};
+    {{#wpredis}}set $redis_addr 127.0.0.1:6379;{{/wpredis}}
+    include {{#basic}}common/php.conf;{{/basic}}{{#wpfc}}common/wpfc.conf;{{/wpfc}}{{#wpsc}}common/wpsc.conf;{{/wpsc}}{{#wpredis}}common/redis.conf;{{/wpredis}}{{#wprocket}}common/wprocket.conf;{{/wprocket}}{{#wpce}}common/wpce.conf;{{/wpce}}
+    {{#wpsubdir}}include common/wpsubdir.conf;{{/wpsubdir}}
+    {{/static}}
+    {{#wp}}include common/wp.conf;{{/wp}}
     include common/locations-wo.conf;{{/alias}}{{/proxy}}
     include {{webroot}}/conf/nginx/*.conf;
 
