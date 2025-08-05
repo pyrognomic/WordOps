@@ -3,7 +3,6 @@ import os
 
 from cement.core.controller import CementBaseController, expose
 
-from wo.core.fileutils import WOFileUtils
 from wo.core.git import WOGit
 from wo.core.logging import Log
 from wo.core.random import RANDOM
@@ -31,10 +30,8 @@ class WOSecureController(CementBaseController):
         arguments = [
             (['--domain'],
                 dict(help='secure a domain', action='store', nargs='?')),
-            (['--wl'],
-                dict(help='whitelist IPs for the domain', action='store', nargs='+')),
             (['--clear'],
-                dict(help='remove ACL include from vhost', action='store_true')),
+                dict(help='remove HTTP authentication', action='store_true')),
             (['--sshport'],
                 dict(help='set custom ssh port', action='store_true')),
             (['--ssh'],
@@ -44,21 +41,16 @@ class WOSecureController(CementBaseController):
                      'when hardening ssh security', action='store_true')),
             (['--force'],
                 dict(help='force execution without prompt', action='store_true')),
-            (['user_input'],
-                dict(help='user input', nargs='?', default=None)),
-            (['user_pass'],
-                dict(help='user pass', nargs='?', default=None))
+            (['--user'],
+                dict(help='HTTP auth username', dest='http_user', action='store')),
+            (['--pass'],
+                dict(help='HTTP auth password', dest='http_pass', action='store'))
         ]
         usage = "wo secure [options]"
 
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
-        if pargs.wl and not pargs.domain:
-            Log.error(self, "--wl requires --domain")
-        if pargs.clear and pargs.domain:
-            self.clear_acl()
-            return
         if pargs.domain:
             self.secure_domain()
         if pargs.sshport:
@@ -68,7 +60,7 @@ class WOSecureController(CementBaseController):
 
     @expose(hide=True)
     def secure_domain(self):
-        """Secure a domain with HTTP auth or IP whitelisting"""
+        """Secure a domain with HTTP authentication"""
         pargs = self.app.pargs
         if not pargs.domain:
             Log.error(self, "Please provide a domain name with --domain option")
@@ -76,81 +68,85 @@ class WOSecureController(CementBaseController):
         site_info = getSiteInfo(self, wo_domain)
         if not site_info:
             Log.error(self, f"site {wo_domain} does not exist")
+        if site_info.site_type not in ['wp', 'wpsubdir', 'wpsubdomain']:
+            Log.error(self, f"{wo_domain} is not a WordPress site")
 
-        webroot = site_info.site_path
-        wp_site = 'wp' in site_info.site_type
+        slug = wo_domain.replace('.', '-').lower()
+        vhost_path = f'/etc/nginx/sites-available/{wo_domain}'
         acl_dir = '/etc/nginx/acls'
-        os.makedirs(acl_dir, exist_ok=True)
-        snippet = os.path.join(acl_dir, f'secure-{wo_domain}.conf')
-        vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
-        # Whitelist IPs
-        if pargs.wl:
-            data = dict(is_wp=wp_site, ips=pargs.wl)
-            WOTemplate.deploy(self, snippet, 'secure.mustache', data)
-            self._insert_acl_include(vhost_path, wo_domain)
-            WOGit.add(self, ['/etc/nginx'], msg=f"Whitelisted IPs for {wo_domain}")
-            if not WOService.reload_service(self, 'nginx'):
-                Log.error(
-                    self,
-                    "service nginx reload failed. check `nginx -t`"
-                )
-            Log.info(self, f"Successfully secured {wo_domain} with IP whitelist")
-            return
-        # HTTP Basic Auth
-        passwd = RANDOM.long(self)
-        username = pargs.user_input or input(f"Provide HTTP authentication user name [{WOVar.wo_user}]: ") or WOVar.wo_user
-        password = pargs.user_pass or getpass.getpass(f"Provide HTTP authentication password [{passwd}]: ") or passwd
-        htpasswd_file = os.path.join(acl_dir, f'htpasswd-{wo_domain}')
-        WOShellExec.cmd_exec(
-            self,
-            f"printf \"{username}:$(openssl passwd -apr1 {password} 2>/dev/null)\\n\" > {htpasswd_file} 2>/dev/null",
-            log=False)
-        data = dict(is_wp=wp_site, htpasswd=htpasswd_file)
-        WOTemplate.deploy(self, snippet, 'secure.mustache', data)
-        self._insert_acl_include(vhost_path, wo_domain)
-        WOGit.add(self, ['/etc/nginx'], msg=f"Secured {wo_domain} with basic auth")
+        htpasswd_file = os.path.join(acl_dir, f'htpasswd-{slug}')
+
+        if pargs.clear:
+            if os.path.exists(htpasswd_file):
+                os.remove(htpasswd_file)
+            if os.path.isfile(vhost_path):
+                with open(vhost_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                for i, line in enumerate(lines):
+                    if line.strip().startswith('map $uri $require_auth'):
+                        j = i
+                        while j < len(lines) and '}' not in lines[j]:
+                            j += 1
+                        if j < len(lines):
+                            lines = lines[:i] + lines[j+1:]
+                        break
+                start = end = None
+                for idx, line in enumerate(lines):
+                    if '# acl start' in line:
+                        start = idx
+                    if '# acl end' in line:
+                        end = idx
+                        break
+                if start is not None and end is not None:
+                    lines = lines[:start+1] + lines[end:]
+                with open(vhost_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+            WOGit.add(self, ['/etc/nginx'], msg=f"Disabled basic auth for {wo_domain}")
+            Log.info(self, f"Disabled security for {wo_domain}")
+        else:
+            os.makedirs(acl_dir, exist_ok=True)
+            passwd = RANDOM.long(self)
+            username = pargs.http_user or input(f"Provide HTTP authentication user name [{WOVar.wo_user}]: ") or WOVar.wo_user
+            password = pargs.http_pass or getpass.getpass(f"Provide HTTP authentication password [{passwd}]: ") or passwd
+            WOShellExec.cmd_exec(
+                self,
+                f"printf \"{username}:$(openssl passwd -apr1 {password} 2>/dev/null)\\n\" > {htpasswd_file} 2>/dev/null",
+                log=False)
+            if os.path.isfile(vhost_path):
+                with open(vhost_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                if 'map $uri $require_auth' not in ''.join(lines):
+                    for idx, line in enumerate(lines):
+                        if line.strip().startswith('server'):
+                            map_block = [
+                                "map $uri $require_auth {\n",
+                                "    ~^/wp-login\\.php     1;\n",
+                                "    ~^/wp-admin/         1;\n",
+                                "    default              0;\n",
+                                "}\n",
+                                "\n",
+                            ]
+                            lines = lines[:idx] + map_block + lines[idx:]
+                            break
+                start = end = None
+                for idx, line in enumerate(lines):
+                    if '# acl start' in line:
+                        start = idx
+                    if '# acl end' in line:
+                        end = idx
+                        break
+                if start is not None and end is not None:
+                    auth_lines = [
+                        "    auth_basic           \"Restricted\"      if=$require_auth;\n",
+                        f"    auth_basic_user_file /etc/nginx/acls/htpasswd-{slug} if=$require_auth;\n",
+                    ]
+                    lines = lines[:start+1] + auth_lines + lines[end:]
+                with open(vhost_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+            WOGit.add(self, ['/etc/nginx'], msg=f"Secured {wo_domain} with basic auth")
+            Log.info(self, f"Successfully secured {wo_domain}")
         if not WOService.reload_service(self, 'nginx'):
             Log.error(self, "service nginx reload failed. check `nginx -t`")
-        Log.info(self, f"Successfully secured {wo_domain}")
-
-    @expose(hide=True)
-    def clear_acl(self):
-        """Remove ACL include from vhost while keeping markers"""
-        pargs = self.app.pargs
-        wo_domain = WODomain.validate(self, pargs.domain)
-        vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
-        if not os.path.exists(vhost_path):
-            return
-        lines = []
-        include_directive = f"include /etc/nginx/acls/secure-{wo_domain}.conf;"
-        with open(vhost_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if include_directive not in line:
-                    lines.append(line)
-        with open(vhost_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-        Log.info(self, f"Removed ACL include for {wo_domain}")
-        if not WOService.reload_service(self, 'nginx'):
-            Log.error(self, "service nginx reload failed. check `nginx -t`")
-
-    def _insert_acl_include(self, vhost_path, domain):
-        """Insert ACL include between acl markers"""
-        acl_line = f"    include /etc/nginx/acls/secure-{domain}.conf;\n"
-        start = '# acl start'
-        end = '# acl end'
-        if not os.path.exists(vhost_path):
-            return
-        with open(vhost_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        new_lines = []
-        inserted = False
-        for line in lines:
-            new_lines.append(line)
-            if not inserted and line.strip() == start:
-                new_lines.append(acl_line)
-                inserted = True
-        with open(vhost_path, 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
 
     @expose(hide=True)
     def secure_ssh(self):

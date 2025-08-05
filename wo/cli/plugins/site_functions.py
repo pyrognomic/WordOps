@@ -22,6 +22,7 @@ from wo.core.mysql import (MySQLConnectionError, StatementExcecutionError,
 from wo.core.services import WOService
 from wo.core.shellexec import CommandExecutionError, WOShellExec
 from wo.core.sslutils import SSL
+from wo.core.template import WOTemplate
 from wo.core.variables import WOVar
 
 
@@ -81,6 +82,10 @@ def setupdomain(self, data):
         self.app.render((data), 'virtualconf.mustache',
                         out=wo_site_nginx_conf)
         wo_site_nginx_conf.close()
+        if data.get('wp'):
+            data.update({'release': WOVar.wo_version, 'secure': False})
+            wp_conf = f"/etc/nginx/common/wp-{data['pool_name']}.conf"
+            WOTemplate.deploy(self, wp_conf, 'wpcommon.mustache', data)
     except IOError as e:
         Log.debug(self, str(e))
         raise SiteError("create nginx configuration failed for site")
@@ -137,6 +142,95 @@ def setupdomain(self, data):
         else:
             Log.info(self, "[" + Log.ENDC + "Fail" + Log.OKBLUE + "]")
             raise SiteError("setup webroot failed for site")
+
+
+def setup_php_fpm(self, data):
+    if 'php_ver' not in data:
+        Log.debug(self, 'No php version specified, skipping php-fpm setup')
+        return
+
+    slug = data.get('pool_name')
+    php_ver = data.get('php_ver')
+    wo_php_key = data.get('wo_php')
+    php_version = WOVar.wo_php_versions.get(wo_php_key)
+    php_fpm_user = data.get('php_fpm_user', f'php-{slug}')
+    webroot = data.get('webroot')
+
+    if not (slug and php_ver and php_version and webroot):
+        raise SiteError('Incomplete PHP-FPM configuration data')
+
+    Log.info(self, 'Configuring PHP-FPM pool \t', end='')
+    try:
+        # create system user and group
+        WOShellExec.cmd_exec(self,
+                             f"getent group {php_fpm_user} > /dev/null 2>&1 || groupadd -r {php_fpm_user}")
+        WOShellExec.cmd_exec(self,
+                             f"id -u {php_fpm_user} > /dev/null 2>&1 || useradd -r -g {php_fpm_user} -M -d /nonexistent -s /usr/sbin/nologin {php_fpm_user}")
+
+        log_dir = f"/var/log/php/{php_ver}/{slug}"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        WOFileUtils.chown(self, log_dir, php_fpm_user, php_fpm_user, recursive=True)
+
+        service_path = f"/etc/systemd/system/php{php_ver}-fpm@.service"
+        service_data = {'php_ver': php_ver, 'php_version': php_version}
+        if not os.path.isfile(service_path):
+            with open(service_path, 'w') as service_file:
+                self.app.render(service_data, 'php-fpm-service.mustache',
+                                out=service_file)
+
+        master_path = f"/etc/php/{php_version}/fpm/php-fpm-{slug}.conf"
+        with open(master_path, 'w') as master_file:
+            self.app.render({'php_ver': php_ver, 'php_version': php_version,
+                             'slug': slug}, 'php-fpm-master.mustache',
+                            out=master_file)
+
+        pool_path = f"/etc/php/{php_version}/fpm/pool.d/{slug}.conf"
+        pool_data = {'php_ver': php_ver, 'php_version': php_version,
+                     'slug': slug, 'php_fpm_user': php_fpm_user,
+                     'webroot': webroot}
+        with open(pool_path, 'w') as pool_file:
+            self.app.render(pool_data, 'php-fpm-pool.mustache',
+                            out=pool_file)
+
+        WOShellExec.cmd_exec(self, 'systemctl daemon-reload')
+        WOShellExec.cmd_exec(self, f'systemctl enable php{php_ver}-fpm@{slug}')
+        WOService.restart_service(self, f'php{php_ver}-fpm@{slug}')
+    except Exception as e:
+        Log.debug(self, str(e))
+        raise SiteError('php-fpm setup failed')
+    else:
+        Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
+
+
+def cleanup_php_fpm(self, slug, old_php_ver, old_php_version):
+    """Remove old php-fpm configuration for a site"""
+    Log.info(self, 'Removing old PHP-FPM config\t', end='')
+    try:
+        service = f'php{old_php_ver}-fpm@{slug}'
+        WOService.stop_service(self, service)
+        WOShellExec.cmd_exec(self, f'systemctl disable {service}')
+
+        paths = [
+            f'/etc/systemd/system/php{old_php_ver}-fpm@.service',
+            f'/etc/php/{old_php_version}/fpm/php-fpm-{slug}.conf',
+            f'/etc/php/{old_php_version}/fpm/pool.d/{slug}.conf',
+            f'/var/log/php/{old_php_ver}/{slug}',
+            f'/run/php/php{old_php_ver}-fpm-{slug}.sock',
+            f'/run/php/php{old_php_ver}-fpm-{slug}.pid',
+        ]
+        for path in paths:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.isfile(path):
+                os.remove(path)
+
+        WOShellExec.cmd_exec(self, 'systemctl daemon-reload')
+    except Exception as e:
+        Log.debug(self, str(e))
+        raise SiteError('php-fpm cleanup failed')
+    else:
+        Log.info(self, '[' + Log.ENDC + 'Done' + Log.OKBLUE + ']')
 
 
 def setupdatabase(self, data):
@@ -754,12 +848,12 @@ def setupwp_plugin(self, plugin_name, plugin_option, plugin_data, data):
                        .format(plugin_name))
 
 
-def setwebrootpermissions(self, webroot):
+def setwebrootpermissions(self, webroot, user=WOVar.wo_php_user):
     Log.debug(self, "Setting up permissions")
     try:
         WOFileUtils.findBrokenSymlink(self, f'{webroot}')
-        WOFileUtils.chown(self, webroot, WOVar.wo_php_user,
-                          WOVar.wo_php_user, recursive=True)
+        WOFileUtils.chown(self, webroot, user,
+                          user, recursive=True)
     except Exception as e:
         Log.debug(self, str(e))
         raise SiteError("problem occured while setting up webroot permissions")

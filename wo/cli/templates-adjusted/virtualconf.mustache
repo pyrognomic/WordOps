@@ -1,4 +1,12 @@
 
+{{#secure}}
+map $uri $require_auth {
+    ~^/wp-login\.php     1;
+    ~^/wp-admin/         1;
+    default              0;
+}
+{{/secure}}
+
 server {
 
     {{#multisite}}
@@ -17,7 +25,10 @@ server {
     error_log /var/log/nginx/{{site_name}}.error.log;
 
     # acl start
-
+    {{#secure}}
+    auth_basic           "Restricted"      if=$require_auth;
+    auth_basic_user_file /etc/nginx/acls/htpasswd-{{slug}} if=$require_auth;
+    {{/secure}}
     # acl end
 
     {{#alias}}
@@ -69,10 +80,11 @@ server {
     {{^static}}
     set $php_ver {{wo-php}};
     set $pool_name {{pool-name}};
+    {{#wpredis}}set $redis_addr 127.0.0.1:6379;{{/wpredis}}
     include {{#basic}}common/php.conf;{{/basic}}{{#wpfc}}common/wpfc.conf;{{/wpfc}}{{#wpsc}}common/wpsc.conf;{{/wpsc}}{{#wpredis}}common/redis.conf;{{/wpredis}}{{#wprocket}}common/wprocket.conf;{{/wprocket}}{{#wpce}}common/wpce.conf;{{/wpce}}
     {{#wpsubdir}}include common/wpsubdir.conf;{{/wpsubdir}}
     {{/static}}
-    {{#wp}}include common/wp.conf;{{/wp}}
+    {{#wp}}include common/wp-{{pool_name}}.conf;{{/wp}}
     include common/locations-wo.conf;{{/alias}}{{/proxy}}
     include {{webroot}}/conf/nginx/*.conf;
 
