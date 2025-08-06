@@ -138,6 +138,53 @@ wo site update example.com --php82 # switch to PHP 8.2
 wo site update example.com --php83 # switch to PHP 8.3
 wo site update example.com --php84 # switch to PHP 8.4
 ```
+### Nginx configuration layout
+
+WordOps generates Nginx configuration files under `/etc/nginx` using a
+combination of per-site variables and shared includes:
+
+```
+/etc/nginx
+├── acls/              # per-site authentication snippets
+├── common/            # shared includes (php.conf, wp.conf, redis.conf)
+├── conf.d/            # global tuning and maps
+├── sites-available/   # vhost definitions
+└── sites-enabled/     # symlinks to enabled vhosts
+```
+
+Each server block sets the PHP version and pool slug before including the
+generic PHP handler which connects to a site-specific socket:
+
+```
+set $php_ver   84;        # PHP version (without a dot)
+set $pool_name example;   # slug for the PHP-FPM pool
+include common/php.conf;  # -> /run/php/php${php_ver}-fpm-${pool_name}.sock
+```
+
+WordPress sites also include `common/wp.conf` to route backend requests and
+apply login protections.
+
+### Code architecture
+
+WordOps is a Python command line application built with the
+[Cement framework](https://builtoncement.com/). The entry point is
+`wo/cli/main.py`, which defines `WOApp` and attaches all controllers.
+
+- Controllers in `wo/cli/plugins/` expose the CLI commands. Each controller
+  subclasses `CementBaseController` and groups related actions.
+  - `WOSiteCreateController`, `WOSiteUpdateController` and `WOSiteCloneController`
+    handle provisioning and maintenance of vhosts.
+  - `WOSecureController` edits Nginx files to enable or clear HTTP basic
+    authentication.
+  - `WOStackController` and its siblings manage installation and upgrades of
+    system packages.
+- Shared helpers in `wo/cli/plugins/site_functions.py` provide reusable
+  routines:
+  - `setup_php_fpm()` renders systemd units and pool files so each site runs its
+    own PHP-FPM master process under a dedicated user.
+  - `cleanup_php_fpm()` removes obsolete PHP-FPM pools when switching versions.
+- Configuration templates live in `wo/cli/templates/` and are rendered with
+  per-site context to produce Nginx and PHP-FPM configuration files.
 
 ### Sites secured with Let's Encrypt
 
