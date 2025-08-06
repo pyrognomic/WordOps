@@ -163,9 +163,14 @@ class WOSecureController(CementBaseController):
 
         with open(vhost_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)
-        Log.info(self, f"Removed basic auth for {wo_domain}")
+        slug = wo_domain.replace('.', '-').lower()
+        htpasswd_file = os.path.join('/etc/nginx/acls', f'htpasswd-{slug}')
+        if os.path.exists(htpasswd_file):
+            os.remove(htpasswd_file)
+        WOGit.add(self, ['/etc/nginx'], msg=f"Removed basic auth for {wo_domain}")
         if not WOService.reload_service(self, 'nginx'):
             Log.error(self, "service nginx reload failed. check `nginx -t`")
+        Log.info(self, f"Removed basic auth for {wo_domain}")
 
     def _update_map_block(self, vhost_path, entries, var_name):
         """Insert map block at top of vhost"""
