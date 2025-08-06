@@ -89,7 +89,7 @@ class WOSiteCloneController(CementBaseController):
         stype = src_info.site_type
         cache = src_info.cache_type if src_info.cache_type else 'basic'
 
-        if stype in ['wp', 'wpsubdir', 'wpsubdomain']:
+        if 'wp' in stype:
             data['wp'] = True
             data['basic'] = False
             data[cache] = True if cache != 'basic' else False
