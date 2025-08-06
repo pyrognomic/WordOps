@@ -23,7 +23,7 @@ class CliTestCaseSecure(TestCase):
                 with WOTestApp(argv=['secure', '--domain', 'example.com', 'user', 'pass']) as app:
                     secure_mod.load(app)
                     app.run()
-                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/wp-login\\.php     1;', '~^/wp-admin/         1;'])
+                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/wp-login\.php     1;', '~^/wp-admin/         1;'])
                     mock_acl.assert_called_with('/etc/nginx/sites-available/example.com', 'example-com')
 
     def test_secure_domain_whitelist(self):
