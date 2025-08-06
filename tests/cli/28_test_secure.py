@@ -23,8 +23,8 @@ class CliTestCaseSecure(TestCase):
                 with WOTestApp(argv=['secure', '--domain', 'example.com', 'user', 'pass']) as app:
                     secure_mod.load(app)
                     app.run()
-                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/wp-login\\.php     1;', '~^/wp-admin/         1;'])
-                    mock_acl.assert_called_with('/etc/nginx/sites-available/example.com', 'example-com')
+                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/wp-login\\.php     1;', '~^/wp-admin/         1;'], 'require_auth_example_com')
+                    mock_acl.assert_called_with('/etc/nginx/sites-available/example.com', 'example-com', 'require_auth_example_com')
 
     def test_secure_domain_whitelist(self):
         fake_site_funcs = mock.Mock()
@@ -74,3 +74,6 @@ class CliTestCaseSecure(TestCase):
                     app.run()
                     mock_remove.assert_called_with(htpasswd_path)
                     mock_git_add.assert_called_with(mock.ANY, ['/etc/nginx'], msg='Removed basic auth for example.com')
+
+                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/admin     1;'], 'require_auth_example_com')
+                    mock_acl.assert_called_with('/etc/nginx/sites-available/example.com', 'example-com', 'require_auth_example_com')
