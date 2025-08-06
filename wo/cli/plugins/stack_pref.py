@@ -292,7 +292,7 @@ def post_pref(self, apt_packages, packages, upgrade=False):
             data = dict(webroot=ngxroot,
                         release=WOVar.wo_version,
                         port=current_backend_port,
-                        php_ver='00',
+                        php_ver='84',
                         pool_name='22222')
             WOTemplate.deploy(
                 self,
