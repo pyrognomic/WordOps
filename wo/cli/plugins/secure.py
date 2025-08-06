@@ -31,8 +31,6 @@ class WOSecureController(CementBaseController):
         arguments = [
             (['--domain'],
                 dict(help='secure a domain', action='store', nargs='?')),
-            (['--wl'],
-                dict(help='whitelist IPs for the domain', action='store', nargs='+')),
             (['--clear'],
                 dict(help='remove ACL include from vhost', action='store_true')),
             (['--sshport'],
@@ -44,6 +42,8 @@ class WOSecureController(CementBaseController):
                      'when hardening ssh security', action='store_true')),
             (['--force'],
                 dict(help='force execution without prompt', action='store_true')),
+            (['--path'],
+                dict(help='paths to secure with basic auth', action='append')),
             (['user_input'],
                 dict(help='user input', nargs='?', default=None)),
             (['user_pass'],
@@ -54,8 +54,6 @@ class WOSecureController(CementBaseController):
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
-        if pargs.wl and not pargs.domain:
-            Log.error(self, "--wl requires --domain")
         if pargs.clear and pargs.domain:
             self.clear_acl()
             return
@@ -68,7 +66,7 @@ class WOSecureController(CementBaseController):
 
     @expose(hide=True)
     def secure_domain(self):
-        """Secure a domain with HTTP auth or IP whitelisting"""
+        """Secure a domain with HTTP Basic Authentication"""
         pargs = self.app.pargs
         if not pargs.domain:
             Log.error(self, "Please provide a domain name with --domain option")
@@ -77,37 +75,45 @@ class WOSecureController(CementBaseController):
         if not site_info:
             Log.error(self, f"site {wo_domain} does not exist")
 
-        webroot = site_info.site_path
         wp_site = 'wp' in site_info.site_type
         acl_dir = '/etc/nginx/acls'
         os.makedirs(acl_dir, exist_ok=True)
-        snippet = os.path.join(acl_dir, f'secure-{wo_domain}.conf')
         vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
-        # Whitelist IPs
-        if pargs.wl:
-            data = dict(is_wp=wp_site, ips=pargs.wl)
-            WOTemplate.deploy(self, snippet, 'secure.mustache', data)
-            self._insert_acl_include(vhost_path, wo_domain)
-            WOGit.add(self, ['/etc/nginx'], msg=f"Whitelisted IPs for {wo_domain}")
-            if not WOService.reload_service(self, 'nginx'):
-                Log.error(
-                    self,
-                    "service nginx reload failed. check `nginx -t`"
-                )
-            Log.info(self, f"Successfully secured {wo_domain} with IP whitelist")
-            return
-        # HTTP Basic Auth
+
+        slug = wo_domain.replace('.', '-').lower()
+        htpasswd_file = os.path.join(acl_dir, f'htpasswd-{slug}')
+
         passwd = RANDOM.long(self)
-        username = pargs.user_input or input(f"Provide HTTP authentication user name [{WOVar.wo_user}]: ") or WOVar.wo_user
-        password = pargs.user_pass or getpass.getpass(f"Provide HTTP authentication password [{passwd}]: ") or passwd
-        htpasswd_file = os.path.join(acl_dir, f'htpasswd-{wo_domain}')
+        username = pargs.user_input or input(
+            f"Provide HTTP authentication user name [{WOVar.wo_user}]: ") or WOVar.wo_user
+        password = pargs.user_pass or getpass.getpass(
+            f"Provide HTTP authentication password [{passwd}]: ") or passwd
         WOShellExec.cmd_exec(
             self,
             f"printf \"{username}:$(openssl passwd -apr1 {password} 2>/dev/null)\\n\" > {htpasswd_file} 2>/dev/null",
             log=False)
-        data = dict(is_wp=wp_site, htpasswd=htpasswd_file)
-        WOTemplate.deploy(self, snippet, 'secure.mustache', data)
-        self._insert_acl_include(vhost_path, wo_domain)
+
+        if wp_site:
+            map_entries = [
+                "~^/wp-login\\.php     1;",
+                "~^/wp-admin/         1;",
+            ]
+        else:
+            if not pargs.path:
+                Log.error(
+                    self,
+                    "Please provide paths to secure using --path option",
+                )
+            map_entries = []
+            for p in pargs.path:
+                p = p.strip()
+                if not p.startswith('/'):
+                    p = f'/{p}'
+                map_entries.append(f"~^{p}     1;")
+
+        self._update_map_block(vhost_path, map_entries)
+        self._insert_acl_block(vhost_path, slug)
+
         WOGit.add(self, ['/etc/nginx'], msg=f"Secured {wo_domain} with basic auth")
         if not WOService.reload_service(self, 'nginx'):
             Log.error(self, "service nginx reload failed. check `nginx -t`")
@@ -115,40 +121,107 @@ class WOSecureController(CementBaseController):
 
     @expose(hide=True)
     def clear_acl(self):
-        """Remove ACL include from vhost while keeping markers"""
+        """Remove map and ACL restrictions from vhost"""
         pargs = self.app.pargs
         wo_domain = WODomain.validate(self, pargs.domain)
         vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
         if not os.path.exists(vhost_path):
             return
-        lines = []
-        include_directive = f"include /etc/nginx/acls/secure-{wo_domain}.conf;"
+
         with open(vhost_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if include_directive not in line:
-                    lines.append(line)
+            lines = f.readlines()
+
+        start = '# acl start'
+        end = '# acl end'
+        new_lines = []
+        in_map = False
+        in_acl = False
+        for line in lines:
+            stripped = line.strip()
+            if line.startswith('map $uri $require_auth'):
+                in_map = True
+                continue
+            if in_map:
+                if stripped == '}':
+                    in_map = False
+                continue
+            if stripped == start:
+                in_acl = True
+                new_lines.append(line)
+                continue
+            if stripped == end:
+                in_acl = False
+                new_lines.append(line)
+                continue
+            if in_acl and ('auth_basic' in stripped or 'auth_basic_user_file' in stripped):
+                continue
+            new_lines.append(line)
+
         with open(vhost_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-        Log.info(self, f"Removed ACL include for {wo_domain}")
+            f.writelines(new_lines)
+        Log.info(self, f"Removed basic auth for {wo_domain}")
         if not WOService.reload_service(self, 'nginx'):
             Log.error(self, "service nginx reload failed. check `nginx -t`")
 
-    def _insert_acl_include(self, vhost_path, domain):
-        """Insert ACL include between acl markers"""
-        acl_line = f"    include /etc/nginx/acls/secure-{domain}.conf;\n"
-        start = '# acl start'
-        end = '# acl end'
+    def _update_map_block(self, vhost_path, entries):
+        """Insert map block at top of vhost"""
         if not os.path.exists(vhost_path):
             return
         with open(vhost_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
         new_lines = []
-        inserted = False
+        in_map = False
         for line in lines:
+            if line.startswith('map $uri $require_auth'):
+                in_map = True
+                continue
+            if in_map and line.strip() == '}':
+                in_map = False
+                continue
+            if in_map:
+                continue
             new_lines.append(line)
-            if not inserted and line.strip() == start:
-                new_lines.append(acl_line)
-                inserted = True
+        idx = 0
+        for i, line in enumerate(new_lines):
+            if line.strip().startswith('server'):
+                idx = i
+                break
+        map_lines = ['map $uri $require_auth {\n']
+        for entry in entries:
+            map_lines.append(f'    {entry}\n')
+        map_lines.append('    default              0;\n')
+        map_lines.append('}\n\n')
+        new_lines[idx:idx] = map_lines
+        with open(vhost_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+
+    def _insert_acl_block(self, vhost_path, slug):
+        """Insert auth_basic directives between acl markers"""
+        if not os.path.exists(vhost_path):
+            return
+        with open(vhost_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        start = '# acl start'
+        end = '# acl end'
+        new_lines = []
+        inside = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped == start:
+                new_lines.append(line)
+                new_lines.append('    auth_basic           "Restricted"      if=$require_auth;\n')
+                new_lines.append(
+                    f'    auth_basic_user_file /etc/nginx/acls/htpasswd-{slug}  if=$require_auth;\n'
+                )
+                inside = True
+                continue
+            if stripped == end:
+                inside = False
+                new_lines.append(line)
+                continue
+            if inside:
+                continue
+            new_lines.append(line)
         with open(vhost_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)
 
