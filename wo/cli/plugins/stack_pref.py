@@ -22,7 +22,6 @@ from wo.core.variables import WOVar
 from wo.core.stackconf import WOConf
 from wo.core.download import WODownload
 from wo.core.checkfqdn import WOFqdn
-from wo.cli.plugins.site_functions import setup_php_fpm
 
 
 def pre_pref(self, apt_packages):
@@ -504,6 +503,7 @@ def post_pref(self, apt_packages, packages, upgrade=False):
 
         # Setup isolated PHP-FPM service for WordOps backend
         php_short = '84'
+        from wo.cli.plugins.site_functions import setup_php_fpm
         setup_php_fpm(self, {
             'webroot': f'{ngxroot}22222',
             'php_ver': php_short,
