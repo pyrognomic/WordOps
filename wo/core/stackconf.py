@@ -12,39 +12,36 @@ class WOConf():
 
     def nginxcommon(self):
         """nginx common configuration deployment"""
-        wo_php_version = list(WOVar.wo_php_versions.keys())
         ngxcom = '/etc/nginx/common'
         if not os.path.exists(ngxcom):
             os.mkdir(ngxcom)
-        for wo_php in wo_php_version:
-            Log.debug(self, 'deploying templates for {0}'.format(wo_php))
-            data = dict(upstream="{0}".format(wo_php),
-                        release=WOVar.wo_version)
-            WOTemplate.deploy(self,
-                              '{0}/{1}.conf'
-                              .format(ngxcom, wo_php),
-                              'php.mustache', data)
+        Log.debug(self, 'deploying common nginx templates')
+        data = dict(release=WOVar.wo_version)
 
-            WOTemplate.deploy(
-                self, '{0}/redis-{1}.conf'.format(ngxcom, wo_php),
-                'redis.mustache', data)
+        WOTemplate.deploy(self,
+                          '{0}/php.conf'.format(ngxcom),
+                          'php.mustache', data)
 
-            WOTemplate.deploy(
-                self, '{0}/wpcommon-{1}.conf'.format(ngxcom, wo_php),
-                'wpcommon.mustache', data)
+        WOTemplate.deploy(
+            self, '{0}/redis.conf'.format(ngxcom),
+            'redis.mustache', data)
 
-            WOTemplate.deploy(
-                self, '{0}/wpfc-{1}.conf'.format(ngxcom, wo_php),
-                'wpfc.mustache', data)
+        WOTemplate.deploy(
+            self, '{0}/wpcommon.conf'.format(ngxcom),
+            'wpcommon.mustache', data)
 
-            WOTemplate.deploy(
-                self, '{0}/wpsc-{1}.conf'.format(ngxcom, wo_php),
-                'wpsc.mustache', data)
+        WOTemplate.deploy(
+            self, '{0}/wpfc.conf'.format(ngxcom),
+            'wpfc.mustache', data)
 
-            WOTemplate.deploy(
-                self, '{0}/wprocket-{1}.conf'.format(ngxcom, wo_php),
-                'wprocket.mustache', data)
+        WOTemplate.deploy(
+            self, '{0}/wpsc.conf'.format(ngxcom),
+            'wpsc.mustache', data)
 
-            WOTemplate.deploy(
-                self, '{0}/wpce-{1}.conf'.format(ngxcom, wo_php),
-                'wpce.mustache', data)
+        WOTemplate.deploy(
+            self, '{0}/wprocket.conf'.format(ngxcom),
+            'wprocket.mustache', data)
+
+        WOTemplate.deploy(
+            self, '{0}/wpce.conf'.format(ngxcom),
+            'wpce.mustache', data)

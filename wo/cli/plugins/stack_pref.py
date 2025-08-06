@@ -209,10 +209,7 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                                   .format(ngxcom),
                                   'wpsubdir.mustache', data)
 
-                for wo_php in WOVar.wo_php_versions:
-                    data = dict(upstream="{0}".format(wo_php),
-                                release=WOVar.wo_version)
-                    WOConf.nginxcommon(self)
+                WOConf.nginxcommon(self)
 
             except CommandExecutionError as e:
                 Log.debug(self, "{0}".format(e))
