@@ -95,6 +95,7 @@ class WOSecureController(CementBaseController):
             log=False)
 
         if wp_site:
+            # escape the dot in wp-login.php for Nginx map pattern
             map_entries = [
                 "~^/wp-login\\.php     1;",
                 "~^/wp-admin/         1;",
