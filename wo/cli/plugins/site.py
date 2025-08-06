@@ -4,7 +4,8 @@ import subprocess
 
 from cement.core.controller import CementBaseController, expose
 from wo.cli.plugins.site_functions import (
-    check_domain_exists, deleteDB, deleteWebRoot, removeNginxConf, logwatch)
+    check_domain_exists, deleteDB, deleteWebRoot, removeNginxConf, logwatch,
+    cleanup_php_fpm)
 from wo.cli.plugins.sitedb import (deleteSiteInfo, getAllsites,
                                    getSiteInfo, updateSiteInfo)
 from wo.cli.plugins.site_create import WOSiteCreateController
@@ -360,6 +361,9 @@ class WOSiteDeleteController(CementBaseController):
         check_site = getSiteInfo(self, wo_domain)
         wo_site_type = check_site.site_type
         wo_site_webroot = check_site.site_path
+        php_version = check_site.php_version
+        slug = wo_domain.replace('.', '-').lower()
+        php_ver = ''.join(php_version.split('.')) if php_version else ''
         if wo_site_webroot == 'deleted':
             mark_webroot_deleted = True
         if wo_site_type in ['mysql', 'wp', 'wpsubdir', 'wpsubdomain']:
@@ -433,6 +437,8 @@ class WOSiteDeleteController(CementBaseController):
             if (mark_webroot_deleted and mark_db_deleted):
                 # TODO Delete nginx conf
                 removeNginxConf(self, wo_domain)
+                if php_version:
+                    cleanup_php_fpm(self, slug, php_ver, php_version)
                 deleteSiteInfo(self, wo_domain)
                 WOAcme.removeconf(self, wo_domain)
                 Log.info(self, "Deleted site {0}".format(wo_domain))
@@ -444,6 +450,8 @@ class WOSiteDeleteController(CementBaseController):
                     (mark_webroot_deleted and mark_db_deleted)):
                 # TODO Delete nginx conf
                 removeNginxConf(self, wo_domain)
+                if php_version:
+                    cleanup_php_fpm(self, slug, php_ver, php_version)
                 deleteSiteInfo(self, wo_domain)
                 # To improve
                 if not WOFileUtils.grepcheck(

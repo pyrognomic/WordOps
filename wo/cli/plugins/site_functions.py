@@ -197,20 +197,20 @@ def setup_php_fpm(self, data):
     else:
         Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
 
-def cleanup_php_fpm(self, slug, old_php_ver, old_php_version):
+def cleanup_php_fpm(self, slug, php_ver, php_version):
     """Remove old php-fpm configuration for a site"""
     Log.info(self, 'Removing old PHP-FPM config\t', end='')
     try:
-        service = f'php{old_php_ver}-fpm@{slug}'
+        service = f'php{php_version}-fpm@{slug}'
         WOService.stop_service(self, service)
         WOShellExec.cmd_exec(self, f'systemctl disable {service}')
 
         paths = [
-            f'/etc/php/{old_php_version}/fpm/php-fpm-{slug}.conf',
-            f'/etc/php/{old_php_version}/fpm/pool.d/{slug}.conf',
-            f'/var/log/php/{old_php_version}/{slug}',
-            f'/run/php/php{old_php_ver}-fpm-{slug}.sock',
-            f'/run/php/php{old_php_version}-fpm-{slug}.pid',
+            f'/etc/php/{php_version}/fpm/php-fpm-{slug}.conf',
+            f'/etc/php/{php_version}/fpm/pool.d/{slug}.conf',
+            f'/var/log/php/{php_version}/{slug}',
+            f'/run/php/php{php_ver}-fpm-{slug}.sock',
+            f'/run/php/php{php_version}-fpm-{slug}.pid',
         ]
         for path in paths:
             if os.path.isdir(path):
