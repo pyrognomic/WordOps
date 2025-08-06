@@ -13,6 +13,10 @@ server {
   root {{webroot}}22222/htdocs;
   index index.php index.htm index.html;
 
+  set $php_ver {{php_ver}};
+  set $pool_name {{pool_name}};
+  include common/php.conf;
+
   # Turn on directory listing
   autoindex on;
 
@@ -27,45 +31,23 @@ server {
     vhost_traffic_status_display_format html;
   }
 
-  location / {
-    try_files $uri $uri/ /index.php$is_args$args;
+  location /nginx_status {
+    stub_status;
+    allow 127.0.0.1;
+    deny all;
+    access_log off;
+    log_not_found off;
   }
 
   # Display menu at location /fpm/status/
-  location =  /fpm/status/ {}
+  location = /fpm/status/ {}
 
-  location ~ /fpm/status/(.*) {
-    try_files $uri =404;
+  location ~ ^/fpm/status/(?<pool>[^/]+)$ {
     include fastcgi_params;
-    fastcgi_param  SCRIPT_NAME  /status;
-    fastcgi_pass $1;
+    fastcgi_param SCRIPT_NAME /status;
+    fastcgi_pass unix:/run/php/$pool.sock;
   }
 
-  location ~ \.php$ {
-    try_files $uri =404;
-    include fastcgi_params;
-    fastcgi_pass multiphp;
-  }
-
-     location /netdata {
-        return 301 /netdata/;
-   }
-
-   location ~ /netdata/(?<ndpath>.*) {
-        proxy_redirect off;
-        proxy_set_header Host $host;
-
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Server $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_http_version 1.1;
-        proxy_pass_request_headers on;
-        proxy_set_header Connection "keep-alive";
-        proxy_store off;
-        proxy_pass http://netdata/$ndpath$is_args$args;
-
-    }
-
-    include {{webroot}}22222/conf/nginx/*.conf;
+  include {{webroot}}22222/conf/nginx/*.conf;
 
 }

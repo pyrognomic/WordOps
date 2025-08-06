@@ -22,6 +22,7 @@ from wo.core.variables import WOVar
 from wo.core.stackconf import WOConf
 from wo.core.download import WODownload
 from wo.core.checkfqdn import WOFqdn
+from wo.cli.plugins.site_functions import setup_php_fpm
 
 
 def pre_pref(self, apt_packages):
@@ -115,6 +116,8 @@ def pre_pref(self, apt_packages):
 
 def post_pref(self, apt_packages, packages, upgrade=False):
     """Post activity after installation of packages"""
+    ngxroot = '/var/www/'
+    current_backend_port = '22222'
     if (apt_packages):
         # Nginx configuration
         if set(WOVar.wo_nginx).issubset(set(apt_packages)):
@@ -164,13 +167,10 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                 WOFileUtils.textappend(self, '/etc/nginx/proxy_params',
                                        'proxy_set_header X-Forwarded-Port $server_port;\n')
             try:
-                data = dict(phpconf=(
-                    bool(WOAptGet.is_installed(self, 'php7.2-fpm'))),
-                    release=WOVar.wo_version)
+                data = dict(release=WOVar.wo_version)
                 WOTemplate.deploy(
                     self, '{0}/stub_status.conf'.format(ngxcnf),
                     'stub_status.mustache', data)
-                data = dict(release=WOVar.wo_version)
                 WOTemplate.deploy(
                     self, '{0}/webp.conf'.format(ngxcnf),
                     'webp.mustache', data, overwrite=False)
@@ -290,7 +290,10 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                 current_backend_port = '22222'
 
             data = dict(webroot=ngxroot,
-                        release=WOVar.wo_version, port=current_backend_port)
+                        release=WOVar.wo_version,
+                        port=current_backend_port,
+                        php_ver='00',
+                        pool_name='22222')
             WOTemplate.deploy(
                 self,
                 '/etc/nginx/sites-available/22222',
@@ -448,7 +451,6 @@ def post_pref(self, apt_packages, packages, upgrade=False):
         for php_version in php_list:
             WOGit.add(self, ["/etc/php"], msg="Adding PHP into Git")
             Log.wait(self, "Configuring php{0}-fpm".format(php_version[0]))
-            ngxroot = '/var/www/'
 
             # Create log directories
             if not os.path.exists('/var/log/php/{0}/'.format(php_version[0])):
@@ -491,138 +493,33 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                           "/etc/php/{0}/fpm/php.ini".format(php_version[0]))
                 config.write(configfile)
 
-            # Render php-fpm pool template for phpx.x
-            data = dict(pid="/run/php/php{0}-fpm.pid".format(php_version[0]),
-                        error_log="/var/log/php{0}-fpm.log".format(
-                            php_version[0]),
-                        include="/etc/php/{0}/fpm/pool.d/*.conf"
-                        .format(php_version[0]))
-            WOTemplate.deploy(
-                self, '/etc/php/{0}/fpm/php-fpm.conf'.format(php_version[0]),
-                'php-fpm.mustache', data)
-            php_short = php_version[0].replace(".", "")
-            data = dict(pool='www-php{0}'.format(php_short),
-                        listen='php{0}-fpm.sock'.format(php_short),
-                        user='www-data',
-                        group='www-data', listenuser='root',
-                        listengroup='www-data', openbasedir=True)
-            WOTemplate.deploy(self, '/etc/php/{0}/fpm/pool.d/www.conf'
-                              .format(php_version[0]),
-                              'php-pool.mustache', data)
-            data = dict(pool='www-two-php{0}'.format(php_short),
-                        listen='php{0}-two-fpm.sock'.format(php_short),
-                        user='www-data',
-                        group='www-data', listenuser='root',
-                        listengroup='www-data', openbasedir=True)
-            WOTemplate.deploy(self,
-                              '/etc/php/{0}/fpm/pool.d/www-two.conf'.format(
-                                  php_version[0]),
-                              'php-pool.mustache', data)
+            WOService.stop_service(self, f'php{php_version[0]}-fpm')
+            WOShellExec.cmd_exec(self, f'systemctl disable php{php_version[0]}-fpm', log=False)
 
-            # Generate /etc/php/x.x/fpm/pool.d/debug.conf
-            WOFileUtils.copyfile(self,
-                                 "/etc/php/{0}/fpm/pool.d/www.conf".format(
-                                     php_version[0]),
-                                 "/etc/php/{0}/fpm/pool.d/debug.conf"
-                                 .format(php_version[0]))
-            WOFileUtils.searchreplace(self,
-                                      "/etc/php/{0}/fpm/pool.d/"
-                                      "debug.conf".format(php_version[0]),
-                                      "[www-php{0}]".format(php_short),
-                                      "[debug]")
-            config = configparser.ConfigParser()
-            config.read(
-                '/etc/php/{0}/fpm/pool.d/debug.conf'.format(php_version[0]))
-            config['debug']['listen'] = '127.0.0.1:91{0}'.format(php_short)
-            config['debug']['rlimit_core'] = 'unlimited'
-            config['debug']['slowlog'] = '/var/log/php/{0}/slow.log'.format(
-                php_version[0])
-            config['debug']['request_slowlog_timeout'] = '10s'
-            with open('/etc/php/{0}/fpm/pool.d/debug.conf'
-                      .format(php_version[0]),
-                      encoding='utf-8', mode='w') as confifile:
-                Log.debug(self,
-                          "writting PHP configuration into "
-                          "/etc/php/{0}/fpm/pool.d/debug.conf"
-                          .format(php_version[0]))
-                config.write(confifile)
-
-            with open("/etc/php/{0}/fpm/pool.d/debug.conf"
-                      .format(php_version[0]),
-                      encoding='utf-8', mode='a') as myfile:
-                myfile.write("php_admin_value[xdebug.profiler_output_dir] "
-                             "= /tmp/ \nphp_admin_value[xdebug.profiler_"
-                             "output_name] = cachegrind.out.%p-%H-%R "
-                             "\nphp_admin_flag[xdebug.profiler_enable"
-                             "_trigger] = on \nphp_admin_flag[xdebug."
-                             "profiler_enable] = off\n")
-
-            # Disable xdebug
-            if not WOShellExec.cmd_exec(self, "grep -q \';zend_extension\'"
-                                        " /etc/php/{0}/mods-available/"
-                                        "xdebug.ini".format(php_version[0])):
-                WOFileUtils.searchreplace(self, "/etc/php/{0}/"
-                                          "mods-available/"
-                                          "xdebug.ini".format(php_version[0]),
-                                          "zend_extension",
-                                          ";zend_extension")
-
-            # PHP and Debug pull configuration
-            if not os.path.exists('{0}22222/htdocs/fpm/status/'
-                                  .format(ngxroot)):
-                Log.debug(self, 'Creating directory '
-                          '{0}22222/htdocs/fpm/status/ '
-                          .format(ngxroot))
-                os.makedirs('{0}22222/htdocs/fpm/status/'
-                            .format(ngxroot))
-                open('{0}22222/htdocs/fpm/status/debug{1}'
-                     .format(ngxroot, php_short),
-                     encoding='utf-8', mode='a').close()
-                open('{0}22222/htdocs/fpm/status/php{1}'
-                     .format(ngxroot, php_short),
-                     encoding='utf-8', mode='a').close()
-
-            # Write info.php
-            if not os.path.exists('{0}22222/htdocs/php/'
-                                  .format(ngxroot)):
-                Log.debug(self, 'Creating directory '
-                          '{0}22222/htdocs/php/ '
-                          .format(ngxroot))
-                os.makedirs('{0}22222/htdocs/php'
-                            .format(ngxroot))
-
-                with open("{0}22222/htdocs/php/info.php"
-                          .format(ngxroot),
-                          encoding='utf-8', mode='w') as myfile:
-                    myfile.write("<?php\nphpinfo();\n?>")
-
-            # write opcache clean for phpxx
-            if not os.path.exists('{0}22222/htdocs/cache/opcache'
-                                  .format(ngxroot)):
-                os.makedirs('{0}22222/htdocs/cache/opcache'
-                            .format(ngxroot))
-            WOFileUtils.textwrite(
-                self, '{0}22222/htdocs/cache/opcache/php{1}.php'
-                .format(ngxroot, php_short),
-                '<?php opcache_reset(); ?>')
-
-            WOFileUtils.chown(self, "{0}22222/htdocs"
-                              .format(ngxroot),
-                              'www-data',
-                              'www-data', recursive=True)
-
-            # enable imagick php extension
             WOShellExec.cmd_exec(self, 'phpenmod -v ALL imagick')
 
-            # check service restart or rollback configuration
-            if not WOService.restart_service(self,
-                                             'php{0}-fpm'
-                                             .format(php_version[0])):
-                WOGit.rollback(self, ["/etc/php"], msg="Rollback PHP")
-            else:
-                Log.valide(
-                    self, "Configuring php{0}-fpm".format(php_version[0]))
-                WOGit.add(self, ["/etc/php"], msg="Adding PHP into Git")
+            Log.valide(self, "Configuring php{0}-fpm".format(php_version[0]))
+            WOGit.add(self, ["/etc/php"], msg="Adding PHP into Git")
+
+
+        # Setup isolated PHP-FPM service for WordOps backend
+        php_short = '84'
+        setup_php_fpm(self, {
+            'webroot': f'{ngxroot}22222',
+            'php_ver': php_short,
+            'wo_php': 'php84',
+            'pool_name': '22222',
+        })
+
+        data = dict(webroot=ngxroot,
+                    release=WOVar.wo_version,
+                    port=current_backend_port,
+                    php_ver=php_short,
+                    pool_name='22222')
+        WOTemplate.deploy(
+            self,
+            '/etc/nginx/sites-available/22222',
+            '22222.mustache', data, overwrite=True)
 
 
         # create mysql config if it doesn't exist
