@@ -176,7 +176,7 @@ def setup_php_fpm(self, data):
 
         master_path = f"/etc/php/{php_version}/fpm/php-fpm-{slug}.conf"
         with open(master_path, 'w') as master_file:
-            self.app.render({'php_ver': php_ver, 'php_version': php_version,
+            self.app.render({'php_version': php_version,
                              'slug': slug}, 'php-fpm-master.mustache',
                             out=master_file)
 
