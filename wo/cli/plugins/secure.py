@@ -81,6 +81,7 @@ class WOSecureController(CementBaseController):
         vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
 
         slug = wo_domain.replace('.', '-').lower()
+        require_auth_var = f"require_auth_{slug.replace('-', '_')}"
         htpasswd_file = os.path.join(acl_dir, f'htpasswd-{slug}')
 
         passwd = RANDOM.long(self)
@@ -111,8 +112,8 @@ class WOSecureController(CementBaseController):
                     p = f'/{p}'
                 map_entries.append(f"~^{p}     1;")
 
-        self._update_map_block(vhost_path, map_entries)
-        self._insert_acl_block(vhost_path, slug)
+        self._update_map_block(vhost_path, map_entries, require_auth_var)
+        self._insert_acl_block(vhost_path, slug, require_auth_var)
 
         WOGit.add(self, ['/etc/nginx'], msg=f"Secured {wo_domain} with basic auth")
         if not WOService.reload_service(self, 'nginx'):
@@ -128,6 +129,9 @@ class WOSecureController(CementBaseController):
         if not os.path.exists(vhost_path):
             return
 
+        slug = wo_domain.replace('.', '-').lower()
+        var_name = f"require_auth_{slug.replace('-', '_')}"
+
         with open(vhost_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
@@ -138,7 +142,7 @@ class WOSecureController(CementBaseController):
         in_acl = False
         for line in lines:
             stripped = line.strip()
-            if line.startswith('map $uri $require_auth'):
+            if line.startswith(f'map $uri ${var_name}'):
                 in_map = True
                 continue
             if in_map:
@@ -163,7 +167,7 @@ class WOSecureController(CementBaseController):
         if not WOService.reload_service(self, 'nginx'):
             Log.error(self, "service nginx reload failed. check `nginx -t`")
 
-    def _update_map_block(self, vhost_path, entries):
+    def _update_map_block(self, vhost_path, entries, var_name):
         """Insert map block at top of vhost"""
         if not os.path.exists(vhost_path):
             return
@@ -172,7 +176,7 @@ class WOSecureController(CementBaseController):
         new_lines = []
         in_map = False
         for line in lines:
-            if line.startswith('map $uri $require_auth'):
+            if line.startswith(f'map $uri ${var_name}'):
                 in_map = True
                 continue
             if in_map and line.strip() == '}':
@@ -186,7 +190,7 @@ class WOSecureController(CementBaseController):
             if line.strip().startswith('server'):
                 idx = i
                 break
-        map_lines = ['map $uri $require_auth {\n']
+        map_lines = [f'map $uri ${var_name} {{\n']
         for entry in entries:
             map_lines.append(f'    {entry}\n')
         map_lines.append('    default              0;\n')
@@ -195,7 +199,7 @@ class WOSecureController(CementBaseController):
         with open(vhost_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)
 
-    def _insert_acl_block(self, vhost_path, slug):
+    def _insert_acl_block(self, vhost_path, slug, var_name):
         """Insert auth_basic directives between acl markers"""
         if not os.path.exists(vhost_path):
             return
@@ -209,9 +213,9 @@ class WOSecureController(CementBaseController):
             stripped = line.strip()
             if stripped == start:
                 new_lines.append(line)
-                new_lines.append('    auth_basic           "Restricted"      if=$require_auth;\n')
+                new_lines.append(f'    auth_basic           "Restricted"      if=${var_name};\n')
                 new_lines.append(
-                    f'    auth_basic_user_file /etc/nginx/acls/htpasswd-{slug}  if=$require_auth;\n'
+                    f'    auth_basic_user_file /etc/nginx/acls/htpasswd-{slug}  if=${var_name};\n'
                 )
                 inside = True
                 continue
