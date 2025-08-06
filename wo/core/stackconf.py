@@ -27,7 +27,7 @@ class WOConf():
             'redis.mustache', data)
 
         WOTemplate.deploy(
-            self, '{0}/wpcommon.conf'.format(ngxcom),
+            self, '{0}/wp.conf'.format(ngxcom),
             'wpcommon.mustache', data)
 
         WOTemplate.deploy(
