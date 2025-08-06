@@ -13,18 +13,18 @@ class CliTestCaseSecure(TestCase):
             'wo.cli.plugins.site_functions': fake_site_funcs,
         }):
             secure_mod = importlib.reload(importlib.import_module('wo.cli.plugins.secure'))
-            with mock.patch.object(secure_mod.WOShellExec, 'cmd_exec') as mock_cmd, \
-                 mock.patch.object(secure_mod.WOTemplate, 'deploy') as mock_deploy, \
+            with mock.patch.object(secure_mod.WOShellExec, 'cmd_exec'), \
                  mock.patch.object(secure_mod.WOService, 'reload_service', return_value=True), \
                  mock.patch.object(secure_mod.WOGit, 'add'), \
                  mock.patch.object(secure_mod.os, 'makedirs'), \
-                 mock.patch.object(secure_mod.os.path, 'exists', return_value=True), \
-                 mock.patch('wo.cli.plugins.secure.open', mock.mock_open(read_data='existing\n    include /var/www/example.com/conf/nginx/*.conf;\n')):
+                 mock.patch.object(secure_mod.WOSecureController, '_update_map_block') as mock_map, \
+                 mock.patch.object(secure_mod.WOSecureController, '_insert_acl_block') as mock_acl:
                 fake_site_funcs.getSiteInfo.return_value = mock.Mock(site_path='/var/www/example.com', site_type='wp')
                 with WOTestApp(argv=['secure', '--domain', 'example.com', 'user', 'pass']) as app:
                     secure_mod.load(app)
                     app.run()
-                    mock_deploy.assert_called_with(mock.ANY, '/etc/nginx/acls/secure-example.com.conf', 'secure.mustache', mock.ANY)
+                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/wp-login\\.php     1;', '~^/wp-admin/         1;'])
+                    mock_acl.assert_called_with('/etc/nginx/sites-available/example.com', 'example-com')
 
     def test_secure_domain_whitelist(self):
         fake_site_funcs = mock.Mock()
@@ -34,14 +34,15 @@ class CliTestCaseSecure(TestCase):
             'wo.cli.plugins.site_functions': fake_site_funcs,
         }):
             secure_mod = importlib.reload(importlib.import_module('wo.cli.plugins.secure'))
-            with mock.patch.object(secure_mod.WOTemplate, 'deploy') as mock_deploy, \
+            with mock.patch.object(secure_mod.WOShellExec, 'cmd_exec'), \
                  mock.patch.object(secure_mod.WOService, 'reload_service', return_value=True), \
                  mock.patch.object(secure_mod.WOGit, 'add'), \
                  mock.patch.object(secure_mod.os, 'makedirs'), \
-                 mock.patch.object(secure_mod.os.path, 'exists', return_value=True), \
-                 mock.patch('wo.cli.plugins.secure.open', mock.mock_open(read_data='existing\n    include /var/www/example.com/conf/nginx/*.conf;\n')):
+                 mock.patch.object(secure_mod.WOSecureController, '_update_map_block') as mock_map, \
+                 mock.patch.object(secure_mod.WOSecureController, '_insert_acl_block') as mock_acl:
                 fake_site_funcs.getSiteInfo.return_value = mock.Mock(site_path='/var/www/example.com', site_type='html')
-                with WOTestApp(argv=['secure', '--domain', 'example.com', '--wl', '127.0.0.1']) as app:
+                with WOTestApp(argv=['secure', '--domain', 'example.com', '--path', '/admin', 'user', 'pass']) as app:
                     secure_mod.load(app)
                     app.run()
-                    mock_deploy.assert_called_with(mock.ANY, '/etc/nginx/acls/secure-example.com.conf', 'secure.mustache', mock.ANY)
+                    mock_map.assert_called_with('/etc/nginx/sites-available/example.com', ['~^/admin     1;'])
+                    mock_acl.assert_called_with('/etc/nginx/sites-available/example.com', 'example-com')
