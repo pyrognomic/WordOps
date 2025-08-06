@@ -162,12 +162,12 @@ def setup_php_fpm(self, data):
         WOShellExec.cmd_exec(self,
                              f"id -u {php_fpm_user} > /dev/null 2>&1 || useradd -r -g {php_fpm_user} -M -d /nonexistent -s /usr/sbin/nologin {php_fpm_user}")
 
-        log_dir = f"/var/log/php/{php_ver}/{slug}"
+        log_dir = f"/var/log/php/{php_version}/{slug}"
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         WOFileUtils.chown(self, log_dir, php_fpm_user, php_fpm_user, recursive=True)
 
-        service_path = f"/etc/systemd/system/php{php_ver}-fpm@.service"
+        service_path = f"/etc/systemd/system/php{php_version}-fpm@.service"
         service_data = {'php_ver': php_ver, 'php_version': php_version}
         if not os.path.isfile(service_path):
             with open(service_path, 'w') as service_file:
@@ -189,8 +189,8 @@ def setup_php_fpm(self, data):
                             out=pool_file)
 
         WOShellExec.cmd_exec(self, 'systemctl daemon-reload')
-        WOShellExec.cmd_exec(self, f'systemctl enable php{php_ver}-fpm@{slug}')
-        WOService.restart_service(self, f'php{php_ver}-fpm@{slug}')
+        WOShellExec.cmd_exec(self, f'systemctl enable php{php_version}-fpm@{slug}')
+        WOService.restart_service(self, f'php{php_version}-fpm@{slug}')
     except Exception as e:
         Log.debug(self, str(e))
         raise SiteError('php-fpm setup failed')
@@ -206,12 +206,11 @@ def cleanup_php_fpm(self, slug, old_php_ver, old_php_version):
         WOShellExec.cmd_exec(self, f'systemctl disable {service}')
 
         paths = [
-            f'/etc/systemd/system/php{old_php_ver}-fpm@.service',
             f'/etc/php/{old_php_version}/fpm/php-fpm-{slug}.conf',
             f'/etc/php/{old_php_version}/fpm/pool.d/{slug}.conf',
-            f'/var/log/php/{old_php_ver}/{slug}',
+            f'/var/log/php/{old_php_version}/{slug}',
             f'/run/php/php{old_php_ver}-fpm-{slug}.sock',
-            f'/run/php/php{old_php_ver}-fpm-{slug}.pid',
+            f'/run/php/php{old_php_version}-fpm-{slug}.pid',
         ]
         for path in paths:
             if os.path.isdir(path):
