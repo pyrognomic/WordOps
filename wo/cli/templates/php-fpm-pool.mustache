@@ -18,6 +18,9 @@ pm.max_spare_servers = 15
 pm.max_requests = 1500
 request_terminate_timeout = 300
 
+ping.path = /ping
+pm.status_path = /status
+
 ; logging
 catch_workers_output = yes
 access.log = /var/log/php/{{php_version}}/{{slug}}/access.log
