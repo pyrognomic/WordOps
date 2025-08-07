@@ -17,7 +17,7 @@ server {
     error_log /var/log/nginx/{{site_name}}.error.log;
 
     # acl start
-
+    include /etc/nginx/acl/{{pool_name}}/protected.conf;
     # acl end
 
     {{#alias}}

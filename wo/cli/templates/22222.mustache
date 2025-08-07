@@ -21,7 +21,7 @@ server {
   autoindex on;
 
   # HTTP Authentication on port 22222
-  include common/acl.conf;
+  include /etc/nginx/acl/{{pool_name}}/protected.conf;
 
   # nginx-vts-status
   location /vts_status {

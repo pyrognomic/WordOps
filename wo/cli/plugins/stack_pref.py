@@ -298,18 +298,27 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                 '/etc/nginx/sites-available/22222',
                 '22222.mustache', data, overwrite=True)
 
+            acl_dir = '/etc/nginx/acl/22222'
+            os.makedirs(acl_dir, exist_ok=True)
+            WOTemplate.deploy(
+                self,
+                f'{acl_dir}/protected.conf',
+                'protected.mustache',
+                dict(data, slug='22222', secure=True, wp=False),
+                overwrite=True)
+
             passwd = ''.join([random.choice
                               (string.ascii_letters + string.digits)
                               for n in range(24)])
-            if not os.path.isfile('/etc/nginx/htpasswd-wo'):
+            cred_path = f'{acl_dir}/credentials'
+            if not os.path.isfile(cred_path):
                 try:
                     WOShellExec.cmd_exec(
                         self, "printf \"WordOps:"
                         "$(openssl passwd -apr1 "
                         "{password} 2> /dev/null)\n\""
-                        "> /etc/nginx/htpasswd-wo "
-                        "2>/dev/null"
-                        .format(password=passwd))
+                        "> {cred} "
+                        "2>/dev/null".format(password=passwd, cred=cred_path))
                 except CommandExecutionError as e:
                     Log.debug(self, "{0}".format(e))
                     Log.error(self, "Failed to save HTTP Auth")
