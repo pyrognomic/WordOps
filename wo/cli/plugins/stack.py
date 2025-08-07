@@ -828,6 +828,12 @@ class WOStackController(CementBaseController):
                 WOMysql.backupAll(self)
                 WOService.stop_service(self, 'mysql')
 
+            for version in WOVar.wo_php_versions.values():
+                service = f'php{version}-fpm'
+                if service in apt_packages:
+                    WOService.stop_service(self, service)
+                    WOService.stop_service(self, f'{service}@22222')
+
             # Netdata uninstaller
             if '/var/lib/wo/tmp/kickstart.sh' in packages:
                 if os.path.exists(
@@ -1130,6 +1136,12 @@ class WOStackController(CementBaseController):
                             'mysql', 'grant-host') == 'localhost':
                         WOMysql.backupAll(self)
                 WOService.stop_service(self, 'mysql')
+
+            for version in WOVar.wo_php_versions.values():
+                service = f'php{version}-fpm'
+                if service in apt_packages:
+                    WOService.stop_service(self, service)
+                    WOService.stop_service(self, f'{service}@22222')
 
             # Netdata uninstaller
             if '/var/lib/wo/tmp/kickstart.sh' in packages:
