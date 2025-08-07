@@ -106,6 +106,16 @@ def pre_pref(self, apt_packages):
                 Log.debug(self, 'Adding repo_url of php for debian')
                 Log.info(self, "Adding repository for PHP, please wait...")
                 WORepo.add(self, repo_url=WOVar.wo_php_repo, repo_name="php")
+    # stop existing PHP-FPM service for WordOps backend to avoid socket
+    # conflicts when reinstalling
+    for version in WOVar.wo_php_versions.values():
+        package_name = f'php{version}-fpm'
+        if package_name in apt_packages:
+            service = f'{package_name}@22222'
+            WOShellExec.cmd_exec(self, f'systemctl stop {service}', log=False)
+            sock = f'/run/php/php{version.replace(".", "")}-fpm-22222.sock'
+            if os.path.exists(sock):
+                os.remove(sock)
 
     # add redis repository
     if set(WOVar.wo_redis).issubset(set(apt_packages)):
