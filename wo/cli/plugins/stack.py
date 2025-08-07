@@ -723,8 +723,11 @@ class WOStackController(CementBaseController):
         # WPCLI
         if pargs.wpcli:
             Log.debug(self, "Removing package variable of WPCLI ")
-            if os.path.isfile('/usr/local/bin/wp'):
-                packages = packages + ['/usr/local/bin/wp']
+            for wp_path in ['/usr/local/bin/wp', '/usr/bin/wp']:
+                if os.path.isfile(wp_path):
+                    packages.append(wp_path)
+            if WOAptGet.is_installed(self, 'wp-cli'):
+                apt_packages.append('wp-cli')
 
         # PHPMYADMIN
         if pargs.phpmyadmin:
@@ -1027,9 +1030,12 @@ class WOStackController(CementBaseController):
 
         # WP-CLI
         if pargs.wpcli:
-            if os.path.isfile('/usr/local/bin/wp'):
-                Log.debug(self, "Purge package variable WPCLI")
-                packages = packages + ['/usr/local/bin/wp']
+            Log.debug(self, "Purge package variable WPCLI")
+            for wp_path in ['/usr/local/bin/wp', '/usr/bin/wp']:
+                if os.path.isfile(wp_path):
+                    packages.append(wp_path)
+            if WOAptGet.is_installed(self, 'wp-cli'):
+                apt_packages.append('wp-cli')
 
         # PHPMYADMIN
         if pargs.phpmyadmin:
