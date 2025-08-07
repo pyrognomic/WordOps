@@ -2,6 +2,11 @@ from pathlib import Path
 
 from wo.cli.main import WOTestApp
 from wo.cli.plugins.site_clone import WOSiteCloneController
+from wo.core.acme import WOAcme
+from wo.core.sslutils import SSL
+from wo.core.services import WOService
+from wo.core.git import WOGit
+import wo.cli.plugins.site_clone as site_clone
 
 
 def test_copy_acl_rewrites_slug(tmp_path):
@@ -28,3 +33,49 @@ def test_copy_acl_rewrites_slug(tmp_path):
     assert 'source-com' not in content
     assert 'dest-com' in content
     assert (dest_dir / 'credentials').is_file()
+
+
+def test_setup_letsencrypt(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake_setupletsencrypt(self, domains, data):
+        calls['domains'] = domains
+        return True
+
+    def fake_deploycert(self, domain):
+        calls['deploy'] = domain
+
+    def fake_httpsredirect(self, domain, domains, redirect=True):
+        calls['redirect'] = (domain, domains, redirect)
+
+    def fake_siteurlhttps(self, domain):
+        calls['siteurl'] = domain
+
+    def fake_reload(self, service):
+        calls['reload'] = service
+        return True
+
+    def fake_git(self, paths, msg=""):
+        calls['git'] = (paths, msg)
+
+    def fake_update(self, domain, **kwargs):
+        calls['update'] = (domain, kwargs)
+
+    monkeypatch.setattr(WOAcme, 'setupletsencrypt', fake_setupletsencrypt)
+    monkeypatch.setattr(WOAcme, 'deploycert', fake_deploycert)
+    monkeypatch.setattr(SSL, 'httpsredirect', fake_httpsredirect)
+    monkeypatch.setattr(SSL, 'siteurlhttps', fake_siteurlhttps)
+    monkeypatch.setattr(WOService, 'reload_service', fake_reload)
+    monkeypatch.setattr(WOGit, 'add', fake_git)
+    monkeypatch.setattr(site_clone, 'updateSiteInfo', fake_update)
+
+    with WOTestApp(argv=[]) as app:
+        controller = WOSiteCloneController()
+        controller.app = app
+        controller._setup_letsencrypt('example.com', str(tmp_path))
+
+    assert calls['domains'] == ['example.com', 'www.example.com']
+    assert calls['deploy'] == 'example.com'
+    assert calls['redirect'][0] == 'example.com'
+    assert calls['update'][0] == 'example.com'
+    assert calls['update'][1]['ssl'] is True
