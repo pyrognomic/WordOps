@@ -28,7 +28,7 @@ class WOConf():
 
         WOTemplate.deploy(
             self, '{0}/wp.conf'.format(ngxcom),
-            'wpcommon.mustache', data)
+            'wp.mustache', data)
 
         WOTemplate.deploy(
             self, '{0}/wpfc.conf'.format(ngxcom),

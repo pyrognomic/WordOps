@@ -50,7 +50,7 @@ variables and shared includes:
 │   ├── php.conf               # generic PHP handler
 │   ├── wp.conf                # WordPress rewrites and ACL hooks
 │   ├── redis.conf             # Redis cache integration
-│   └── ...                    # php version–specific includes (php84.conf, wpcommon-php84.conf, etc.)
+│   └── ...                    # other specific configs
 ├── conf.d/                    # global Nginx tuning and maps
 │   ├── gzip.conf
 │   ├── map-wp-fastcgi-cache.conf
@@ -105,7 +105,7 @@ Key templates in `wo/cli/templates/`:
 - `php-fpm-master.mustache` – writes `php-fpm-<slug>.conf`
 - `php-fpm-pool.mustache` – defines the pool and user permissions
 - `php.mustache` – server snippet that sets `$php_ver`/`$pool_name`
-- `wpcommon.mustache` – WordPress routing and login protection
+- `wp.mustache` – WordPress routing and login protection
 - `redis.mustache` – optional Redis caching snippet
 - `virtualconf.mustache` – base Nginx vhost pulling the snippets together
 
