@@ -14,6 +14,9 @@ from wo.core.services import WOService
 from wo.core.variables import WOVar
 from wo.core.shellexec import WOShellExec
 from wo.core.fileutils import WOFileUtils
+from wo.core.acme import WOAcme
+from wo.core.sslutils import SSL
+from wo.core.git import WOGit
 
 
 def _parse_db_config(path):
@@ -46,7 +49,50 @@ class WOSiteCloneController(CementBaseController):
             (['--user'], dict(help='WordPress admin user')),
             (['--email'], dict(help='WordPress admin email')),
             (['--pass'], dict(help='WordPress admin password', dest='wppass')),
+            (['-le', '--letsencrypt'],
+             dict(help="configure letsencrypt ssl for the site",
+                  action='store_true')),
         ]
+
+    def _copy_acl(self, src_slug, dest_slug, base='/etc/nginx/acl'):
+        """Copy Nginx ACL files from src_slug to dest_slug."""
+        src_acl = os.path.join(base, src_slug)
+        dest_acl = os.path.join(base, dest_slug)
+        if not os.path.isdir(src_acl):
+            return
+        os.makedirs(base, exist_ok=True)
+        if os.path.exists(dest_acl):
+            WOFileUtils.rm(self, dest_acl)
+        WOFileUtils.copyfiles(self, src_acl, dest_acl)
+        protected = os.path.join(dest_acl, 'protected.conf')
+        if os.path.isfile(protected):
+            with open(protected, 'r') as f:
+                content = f.read()
+            content = content.replace(src_slug, dest_slug)
+            with open(protected, 'w') as f:
+                f.write(content)
+
+    def _setup_letsencrypt(self, domain, webroot):
+        acme_domains = [domain, f"www.{domain}"]
+        acmedata = dict(dns=False, acme_dns='dns_cf',
+                        dnsalias=False, acme_alias='', keylength='')
+        if self.app.config.has_section('letsencrypt'):
+            acmedata['keylength'] = self.app.config.get('letsencrypt',
+                                                        'keylength')
+        else:
+            acmedata['keylength'] = 'ec-384'
+        if WOAcme.setupletsencrypt(self, acme_domains, acmedata):
+            WOAcme.deploycert(self, domain)
+            SSL.httpsredirect(self, domain, acme_domains, True)
+            SSL.siteurlhttps(self, domain)
+            if not WOService.reload_service(self, 'nginx'):
+                Log.error(self, 'service nginx reload failed. '
+                          'check issues with `nginx -t` command')
+            WOGit.add(self, [f"{webroot}/conf/nginx"],
+                      msg=f"Adding letsencrypts config of site: {domain}")
+            updateSiteInfo(self, domain, ssl=True)
+            Log.info(self, f"Congratulations! Successfully Configured SSL on "
+                     f"https://{domain}")
 
     @expose(hide=True)
     def default(self):
@@ -118,6 +164,9 @@ class WOSiteCloneController(CementBaseController):
                        stype=stype, cache=cache)
         setup_php_fpm(self, data)
         setwebrootpermissions(self, dest_webroot, data['php_fpm_user'])
+        src_slug = src.replace('.', '-').lower()
+        dest_slug = dest.replace('.', '-').lower()
+        self._copy_acl(src_slug, dest_slug)
         WOService.reload_service(self, 'nginx')
 
         conf_src = os.path.join(WOVar.wo_webroot, src, 'wp-config.php')
@@ -163,4 +212,6 @@ class WOSiteCloneController(CementBaseController):
             WOFileUtils.chown(self, conf_dest, WOVar.wo_php_user, WOVar.wo_php_user)
 
         WOFileUtils.rm(self, backup)
+        if pargs.letsencrypt:
+            self._setup_letsencrypt(dest, dest_webroot)
         Log.info(self, f"Successfully cloned '{src}' → '{dest}'")
