@@ -1,11 +1,5 @@
 # WordPress COMMON SETTINGS - WordOps {{release}}
 # DO NOT MODIFY, ALL CHANGES WILL BE LOST AFTER AN WordOps (wo) UPDATE
-# Limit access to avoid brute force attack
-location = /wp-login.php {
-    limit_req zone=one burst=1 nodelay;
-    include fastcgi_params;
-    fastcgi_pass unix:/run/php/php${php_ver}-fpm-${pool_name}.sock;
-}
 # Prevent DoS attacks on wp-cron
 location = /wp-cron.php {
     limit_req zone=two burst=1 nodelay;
