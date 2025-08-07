@@ -438,7 +438,7 @@ class WOSiteDeleteController(CementBaseController):
                 # TODO Delete nginx conf
                 removeNginxConf(self, wo_domain)
                 if php_version:
-                    cleanup_php_fpm(self, slug, php_ver, php_version)
+                    cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=True)
                 deleteSiteInfo(self, wo_domain)
                 WOAcme.removeconf(self, wo_domain)
                 Log.info(self, "Deleted site {0}".format(wo_domain))
@@ -451,7 +451,7 @@ class WOSiteDeleteController(CementBaseController):
                 # TODO Delete nginx conf
                 removeNginxConf(self, wo_domain)
                 if php_version:
-                    cleanup_php_fpm(self, slug, php_ver, php_version)
+                    cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=True)
                 deleteSiteInfo(self, wo_domain)
                 # To improve
                 if not WOFileUtils.grepcheck(

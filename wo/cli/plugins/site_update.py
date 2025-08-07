@@ -545,7 +545,7 @@ class WOSiteUpdateController(CementBaseController):
         old_php_ver = old_php_version.replace('.', '')
         new_php_ver = check_php_version.replace('.', '')
         if new_php_ver != old_php_ver:
-            cleanup_php_fpm(self, slug, old_php_ver, old_php_version)
+            cleanup_php_fpm(self, slug, old_php_ver, old_php_version, delete_vhost=False)
 
         # Define php-fpm variables for templates
         data['pool_name'] = slug

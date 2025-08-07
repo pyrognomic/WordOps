@@ -161,6 +161,9 @@ def setup_php_fpm(self, data):
                              f"getent group {php_fpm_user} > /dev/null 2>&1 || groupadd -r {php_fpm_user}")
         WOShellExec.cmd_exec(self,
                              f"id -u {php_fpm_user} > /dev/null 2>&1 || useradd -r -g {php_fpm_user} -M -d /nonexistent -s /usr/sbin/nologin {php_fpm_user}")
+        # add nginx user to php-fpm-user group (grant perm to connect to php-fpm socket)
+        WOShellExec.cmd_exec(self,
+                             f"usermod -aG {php_fpm_user} {WOVar.wo_php_user}")
 
         log_dir = f"/var/log/php/{php_version}/{slug}"
         if not os.path.exists(log_dir):
@@ -197,13 +200,21 @@ def setup_php_fpm(self, data):
     else:
         Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
 
-def cleanup_php_fpm(self, slug, php_ver, php_version):
+def cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=False):
     """Remove old php-fpm configuration for a site"""
     Log.info(self, 'Removing old PHP-FPM config\t', end='')
     try:
         service = f'php{php_version}-fpm@{slug}'
         WOService.stop_service(self, service)
         WOShellExec.cmd_exec(self, f'systemctl disable {service}')
+
+        php_fpm_user = f'php-{slug}'
+        WOShellExec.cmd_exec(
+            self, f'gpasswd -d {WOVar.wo_php_user} {php_fpm_user} || true')
+
+        if delete_vhost:
+            WOShellExec.cmd_exec(self, f'userdel {php_fpm_user} || true')
+            WOShellExec.cmd_exec(self, f'groupdel {php_fpm_user} || true')
 
         paths = [
             f'/etc/php/{php_version}/fpm/php-fpm-{slug}.conf',
