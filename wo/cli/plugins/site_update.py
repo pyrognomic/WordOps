@@ -7,7 +7,7 @@ from cement.core.controller import CementBaseController, expose
 from wo.cli.plugins.site_functions import (
     detSitePar, site_package_check,
     pre_run_checks, setupdomain, SiteError,
-    setupdatabase, setupwordpress, setwebrootpermissions,
+    setupdatabase, setupwordpress, setwebrootpermissions, setup_php_fpm,
     display_cache_settings, copyWildcardCert,
     updatewpuserpassword, setupngxblocker, setupwp_plugin,
     setupwordpressnetwork, installwp_plugin, sitebackup,
