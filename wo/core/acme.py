@@ -137,15 +137,25 @@ class WOAcme:
                 Log.failed(self, "Deploying SSL cert")
                 Log.error(self, "Unable to deploy certificate")
 
-            if os.path.isdir('/var/www/{0}/conf/nginx'
-                             .format(wo_domain_name)):
+            # Ensure the site configuration directory exists before
+            # attempting to render ``ssl.conf``.  During operations like
+            # ``wo site clone`` the webroot may have been created but the
+            # ``conf/nginx`` directory might not yet be present which
+            # caused the previous ``isdir`` check to fail and skipped the
+            # template rendering entirely.
+            nginx_conf_dir = '/var/www/{0}/conf/nginx'.format(wo_domain_name)
+            if not os.path.isdir(nginx_conf_dir):
+                WOFileUtils.mkdir(self, nginx_conf_dir)
 
-                data = dict(ssl_live_path=WOVar.wo_ssl_live,
-                            domain=wo_domain_name, quic=True)
-                WOTemplate.deploy(self,
-                                  '/var/www/{0}/conf/nginx/ssl.conf'
-                                  .format(wo_domain_name),
-                                  'ssl.mustache', data, overwrite=False)
+            data = dict(ssl_live_path=WOVar.wo_ssl_live,
+                        domain=wo_domain_name, quic=True)
+            WOTemplate.deploy(
+                self,
+                '{0}/ssl.conf'.format(nginx_conf_dir),
+                'ssl.mustache',
+                data,
+                overwrite=False,
+            )
 
             if not WOFileUtils.grep(self, '/var/www/22222/conf/nginx/ssl.conf',
                                     '/etc/letsencrypt'):
