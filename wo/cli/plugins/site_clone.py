@@ -48,6 +48,24 @@ class WOSiteCloneController(CementBaseController):
             (['--pass'], dict(help='WordPress admin password', dest='wppass')),
         ]
 
+    def _copy_acl(self, src_slug, dest_slug, base='/etc/nginx/acl'):
+        """Copy Nginx ACL files from src_slug to dest_slug."""
+        src_acl = os.path.join(base, src_slug)
+        dest_acl = os.path.join(base, dest_slug)
+        if not os.path.isdir(src_acl):
+            return
+        os.makedirs(base, exist_ok=True)
+        if os.path.exists(dest_acl):
+            WOFileUtils.rm(self, dest_acl)
+        WOFileUtils.copyfiles(self, src_acl, dest_acl)
+        protected = os.path.join(dest_acl, 'protected.conf')
+        if os.path.isfile(protected):
+            with open(protected, 'r') as f:
+                content = f.read()
+            content = content.replace(src_slug, dest_slug)
+            with open(protected, 'w') as f:
+                f.write(content)
+
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
@@ -118,6 +136,9 @@ class WOSiteCloneController(CementBaseController):
                        stype=stype, cache=cache)
         setup_php_fpm(self, data)
         setwebrootpermissions(self, dest_webroot, data['php_fpm_user'])
+        src_slug = src.replace('.', '-').lower()
+        dest_slug = dest.replace('.', '-').lower()
+        self._copy_acl(src_slug, dest_slug)
         WOService.reload_service(self, 'nginx')
 
         conf_src = os.path.join(WOVar.wo_webroot, src, 'wp-config.php')
