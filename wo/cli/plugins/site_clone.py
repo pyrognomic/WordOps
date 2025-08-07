@@ -137,8 +137,9 @@ class WOSiteCloneController(CementBaseController):
 
         if 'wp' in stype:
             data['wp'] = True
-            data['basic'] = False
-            data[cache] = True if cache != 'basic' else False
+            data['basic'] = cache == 'basic'
+            if cache != 'basic':
+                data[cache] = True
             data['multisite'] = stype in ['wpsubdir', 'wpsubdomain']
             if stype == 'wpsubdir':
                 data['wpsubdir'] = True
