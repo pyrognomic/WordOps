@@ -951,7 +951,7 @@ class WOStackController(CementBaseController):
         for parg_version, version in WOVar.wo_php_versions.items():
             if getattr(pargs, parg_version, False):
                 Log.debug(self, f"Setting apt_packages variable for PHP {version}")
-                if not WOAptGet.is_installed(self, f'php{version}-fpm'):
+                if WOAptGet.is_installed(self, f'php{version}-fpm'):
                     apt_packages = apt_packages + wo_vars[parg_version]
                 else:
                     Log.debug(self, f"PHP {version} already purged")
