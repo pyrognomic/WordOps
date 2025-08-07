@@ -16,6 +16,9 @@ from wo.core.logging import Log
 from wo.core.nginxhashbucket import hashbucket
 from wo.core.services import WOService
 from wo.core.sslutils import SSL
+from wo.core.template import WOTemplate
+from wo.core.random import RANDOM
+from wo.core.shellexec import WOShellExec
 from wo.core.variables import WOVar
 
 
@@ -101,6 +104,8 @@ class WOSiteCreateController(CementBaseController):
             (['--vhostonly'], dict(help="only create vhost and database "
                                    "without installing WordPress",
                                    action='store_true')),
+            (['--secure'],
+                dict(help="enable HTTP basic authentication", action='store_true')),
         ]
         for php_version, php_number in WOVar.wo_php_versions.items():
             arguments.append(([f'--{php_version}'],
@@ -327,6 +332,7 @@ class WOSiteCreateController(CementBaseController):
 
                 # Fix Nginx Hashbucket size error
                 hashbucket(self)
+                self._render_protected(data, pargs.secure)
             except SiteError as e:
                 # call cleanup actions on failure
                 Log.info(self, Log.FAIL +
@@ -682,3 +688,29 @@ class WOSiteCreateController(CementBaseController):
                           msg="Adding letsencrypts config of site: {0}"
                           .format(wo_domain))
                 updateSiteInfo(self, wo_domain, ssl=letsencrypt)
+
+    def _render_protected(self, data, secure):
+        slug = data.get('pool_name')
+        if not slug:
+            return
+        acl_dir = f'/etc/nginx/acl/{slug}'
+        os.makedirs(acl_dir, exist_ok=True)
+        protected = os.path.join(acl_dir, 'protected.conf')
+        pdata = {
+            'slug': slug,
+            'wp': data.get('wp', False),
+            'php_ver': data.get('php_ver'),
+            'pool_name': data.get('pool_name'),
+            'secure': secure,
+        }
+        WOTemplate.deploy(self, protected, 'protected.mustache', pdata, overwrite=True)
+        if secure:
+            passwd = RANDOM.long(self)
+            username = data.get('wo_user', WOVar.wo_user)
+            cred = os.path.join(acl_dir, 'credentials')
+            WOShellExec.cmd_exec(
+                self,
+                f"printf \"{username}:$(openssl passwd -apr1 {passwd} 2>/dev/null)\\n\" > {cred} 2>/dev/null",
+                log=False)
+            Log.info(self, f"HTTP Auth User : {username}")
+            Log.info(self, f"HTTP Auth Password : {passwd}")

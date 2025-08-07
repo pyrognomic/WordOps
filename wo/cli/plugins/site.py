@@ -439,6 +439,8 @@ class WOSiteDeleteController(CementBaseController):
                 removeNginxConf(self, wo_domain)
                 if php_version:
                     cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=True)
+                acl_dir = f'/etc/nginx/acl/{slug}'
+                WOFileUtils.rm(self, acl_dir)
                 deleteSiteInfo(self, wo_domain)
                 WOAcme.removeconf(self, wo_domain)
                 Log.info(self, "Deleted site {0}".format(wo_domain))
@@ -452,6 +454,8 @@ class WOSiteDeleteController(CementBaseController):
                 removeNginxConf(self, wo_domain)
                 if php_version:
                     cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=True)
+                acl_dir = f'/etc/nginx/acl/{slug}'
+                WOFileUtils.rm(self, acl_dir)
                 deleteSiteInfo(self, wo_domain)
                 # To improve
                 if not WOFileUtils.grepcheck(

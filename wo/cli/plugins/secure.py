@@ -3,7 +3,6 @@ import os
 
 from cement.core.controller import CementBaseController, expose
 
-from wo.core.fileutils import WOFileUtils
 from wo.core.git import WOGit
 from wo.core.logging import Log
 from wo.core.random import RANDOM
@@ -12,6 +11,7 @@ from wo.core.shellexec import WOShellExec
 from wo.core.template import WOTemplate
 from wo.core.variables import WOVar
 from wo.core.domainvalidate import WODomain
+from wo.core.fileutils import WOFileUtils
 from wo.cli.plugins.site_functions import getSiteInfo
 
 
@@ -75,14 +75,11 @@ class WOSecureController(CementBaseController):
         if not site_info:
             Log.error(self, f"site {wo_domain} does not exist")
 
-        wp_site = 'wp' in site_info.site_type
-        acl_dir = '/etc/nginx/acls'
-        os.makedirs(acl_dir, exist_ok=True)
-        vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
-
         slug = wo_domain.replace('.', '-').lower()
-        require_auth_var = f"require_auth_{slug.replace('-', '_')}"
-        htpasswd_file = os.path.join(acl_dir, f'htpasswd-{slug}')
+        acl_dir = f'/etc/nginx/acl/{slug}'
+        os.makedirs(acl_dir, exist_ok=True)
+        protected = os.path.join(acl_dir, 'protected.conf')
+        credentials = os.path.join(acl_dir, 'credentials')
 
         passwd = RANDOM.long(self)
         username = pargs.user_input or input(
@@ -91,30 +88,18 @@ class WOSecureController(CementBaseController):
             f"Provide HTTP authentication password [{passwd}]: ") or passwd
         WOShellExec.cmd_exec(
             self,
-            f"printf \"{username}:$(openssl passwd -apr1 {password} 2>/dev/null)\\n\" > {htpasswd_file} 2>/dev/null",
+            f"printf \"{username}:$(openssl passwd -apr1 {password} 2>/dev/null)\\n\" > {credentials} 2>/dev/null",
             log=False)
 
-        if wp_site:
-            # escape the dot in wp-login.php for Nginx map pattern
-            map_entries = [
-                "~^/wp-login\\.php     1;",
-                "~^/wp-admin/         1;",
-            ]
-        else:
-            if not pargs.path:
-                Log.error(
-                    self,
-                    "Please provide paths to secure using --path option",
-                )
-            map_entries = []
-            for p in pargs.path:
-                p = p.strip()
-                if not p.startswith('/'):
-                    p = f'/{p}'
-                map_entries.append(f"~^{p}     1;")
+        data = {
+            'slug': slug,
+            'secure': True,
+            'wp': 'wp' in site_info.site_type,
+            'php_ver': site_info.php_version.replace('.', ''),
+            'pool_name': slug,
+        }
 
-        self._update_map_block(vhost_path, map_entries, require_auth_var)
-        self._insert_acl_block(vhost_path, slug, require_auth_var)
+        WOTemplate.deploy(self, protected, 'protected.mustache', data, overwrite=True)
 
         WOGit.add(self, ['/etc/nginx'], msg=f"Secured {wo_domain} with basic auth")
         if not WOService.reload_service(self, 'nginx'):
@@ -123,119 +108,35 @@ class WOSecureController(CementBaseController):
 
     @expose(hide=True)
     def clear_acl(self):
-        """Remove map and ACL restrictions from vhost"""
+        """Remove HTTP Basic Authentication"""
         pargs = self.app.pargs
         wo_domain = WODomain.validate(self, pargs.domain)
-        vhost_path = os.path.join('/etc/nginx/sites-available', wo_domain)
-        if not os.path.exists(vhost_path):
-            return
+        site_info = getSiteInfo(self, wo_domain)
+        if not site_info:
+            Log.error(self, f"site {wo_domain} does not exist")
 
         slug = wo_domain.replace('.', '-').lower()
-        var_name = f"require_auth_{slug.replace('-', '_')}"
+        acl_dir = f'/etc/nginx/acl/{slug}'
+        protected = os.path.join(acl_dir, 'protected.conf')
+        credentials = os.path.join(acl_dir, 'credentials')
 
-        with open(vhost_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        data = {
+            'slug': slug,
+            'secure': False,
+            'wp': 'wp' in site_info.site_type,
+            'php_ver': site_info.php_version.replace('.', ''),
+            'pool_name': slug,
+        }
 
-        start = '# acl start'
-        end = '# acl end'
-        new_lines = []
-        in_map = False
-        in_acl = False
-        for line in lines:
-            stripped = line.strip()
-            if line.startswith(f'map $uri ${var_name}'):
-                in_map = True
-                continue
-            if in_map:
-                if stripped == '}':
-                    in_map = False
-                continue
-            if stripped == start:
-                in_acl = True
-                new_lines.append(line)
-                continue
-            if stripped == end:
-                in_acl = False
-                new_lines.append(line)
-                continue
-            if in_acl and ('auth_basic' in stripped or 'auth_basic_user_file' in stripped):
-                continue
-            new_lines.append(line)
+        WOTemplate.deploy(self, protected, 'protected.mustache', data, overwrite=True)
+        if os.path.exists(credentials):
+            os.remove(credentials)
 
-        with open(vhost_path, 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
-        slug = wo_domain.replace('.', '-').lower()
-        htpasswd_file = os.path.join('/etc/nginx/acls', f'htpasswd-{slug}')
-        if os.path.exists(htpasswd_file):
-            os.remove(htpasswd_file)
         WOGit.add(self, ['/etc/nginx'], msg=f"Removed basic auth for {wo_domain}")
         if not WOService.reload_service(self, 'nginx'):
             Log.error(self, "service nginx reload failed. check `nginx -t`")
         Log.info(self, f"Removed basic auth for {wo_domain}")
 
-    def _update_map_block(self, vhost_path, entries, var_name):
-        """Insert map block at top of vhost"""
-        if not os.path.exists(vhost_path):
-            return
-        with open(vhost_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        new_lines = []
-        in_map = False
-        for line in lines:
-            if line.startswith(f'map $uri ${var_name}'):
-                in_map = True
-                continue
-            if in_map and line.strip() == '}':
-                in_map = False
-                continue
-            if in_map:
-                continue
-            new_lines.append(line)
-        idx = 0
-        for i, line in enumerate(new_lines):
-            if line.strip().startswith('server'):
-                idx = i
-                break
-        map_lines = [f'map $uri ${var_name} {{\n']
-        for entry in entries:
-            map_lines.append(f'    {entry}\n')
-        map_lines.append('    default              0;\n')
-        map_lines.append('}\n\n')
-        new_lines[idx:idx] = map_lines
-        with open(vhost_path, 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
-
-    def _insert_acl_block(self, vhost_path, slug, var_name):
-        """Insert auth_basic directives between acl markers"""
-        if not os.path.exists(vhost_path):
-            return
-        with open(vhost_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        start = '# acl start'
-        end = '# acl end'
-        new_lines = []
-        inside = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == start:
-                new_lines.append(line)
-                new_lines.append(f'    auth_basic           "Restricted"      if=${var_name};\n')
-                new_lines.append(
-                    f'    auth_basic_user_file /etc/nginx/acls/htpasswd-{slug}  if=${var_name};\n'
-                )
-                inside = True
-                continue
-            if stripped == end:
-                inside = False
-                new_lines.append(line)
-                continue
-            if inside:
-                continue
-            new_lines.append(line)
-        with open(vhost_path, 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
-
-    @expose(hide=True)
     def secure_ssh(self):
         """Harden ssh security"""
         pargs = self.app.pargs
@@ -280,7 +181,6 @@ class WOSecureController(CementBaseController):
         else:
             Log.error(self, "SSH config file not found")
 
-    @expose(hide=True)
     def secure_ssh_port(self):
         """Change SSH port"""
         WOGit.add(self, ["/etc/ssh"],
