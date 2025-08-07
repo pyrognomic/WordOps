@@ -200,7 +200,7 @@ def setup_php_fpm(self, data):
     else:
         Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
 
-def cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=False):
+def cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=True):
     """Remove old php-fpm configuration for a site"""
     Log.info(self, 'Removing old PHP-FPM config\t', end='')
     try:
@@ -209,8 +209,6 @@ def cleanup_php_fpm(self, slug, php_ver, php_version, delete_vhost=False):
         WOShellExec.cmd_exec(self, f'systemctl disable {service}')
 
         php_fpm_user = f'php-{slug}'
-        WOShellExec.cmd_exec(
-            self, f'gpasswd -d {WOVar.wo_php_user} {php_fpm_user} || true')
 
         if delete_vhost:
             WOShellExec.cmd_exec(self, f'userdel {php_fpm_user} || true')
