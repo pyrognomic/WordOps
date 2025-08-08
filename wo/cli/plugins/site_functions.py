@@ -400,11 +400,12 @@ def setupwordpress(self, data, vhostonly=False):
 
     WOFileUtils.chdir(self, '{0}/htdocs/'.format(wo_site_webroot))
     Log.debug(self, "Setting up wp-config file")
+    skip_check = '--skip-check ' if vhostonly else ''
     if not data['multisite']:
         Log.debug(self, "Generating wp-config for WordPress Single site")
         Log.debug(self, "/bin/bash -c \"{0} --allow-root "
                   .format(WOVar.wo_wpcli_path) +
-                  "config create " +
+                  "config create {0}".format(skip_check) +
                   "--dbname=\'{0}\' --dbprefix=\'{1}\' --dbuser=\'{2}\' "
                   "--dbhost=\'{3}\' "
                   .format(data['wo_db_name'], wo_wp_prefix,
@@ -415,7 +416,7 @@ def setupwordpress(self, data, vhostonly=False):
         try:
             if WOShellExec.cmd_exec(self, "/bin/bash -c \"{0} --allow-root"
                                     .format(WOVar.wo_wpcli_path) +
-                                    " config create " +
+                                    " config create {0}".format(skip_check) +
                                     "--dbname=\'{0}\' --dbprefix=\'{1}\' "
                                     "--dbuser=\'{2}\' --dbhost=\'{3}\' "
                                     .format(data['wo_db_name'], wo_wp_prefix,
@@ -435,7 +436,7 @@ def setupwordpress(self, data, vhostonly=False):
         Log.debug(self, "Generating wp-config for WordPress multisite")
         Log.debug(self, "/bin/bash -c \"{0} --allow-root "
                   .format(WOVar.wo_wpcli_path) +
-                  "config create " +
+                  "config create {0}".format(skip_check) +
                   "--dbname=\'{0}\' --dbprefix=\'{1}\' --dbhost=\'{2}\' "
                   .format(data['wo_db_name'],
                           wo_wp_prefix, data['wo_db_host']) +
@@ -449,7 +450,7 @@ def setupwordpress(self, data, vhostonly=False):
         try:
             if WOShellExec.cmd_exec(self, "/bin/bash -c \"{0} --allow-root"
                                     .format(WOVar.wo_wpcli_path) +
-                                    " config create " +
+                                    " config create {0}".format(skip_check) +
                                     "--dbname=\'{0}\' --dbprefix=\'{1}\' "
                                     "--dbhost=\'{2}\' "
                                     .format(data['wo_db_name'], wo_wp_prefix,
