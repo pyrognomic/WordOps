@@ -73,7 +73,12 @@ class WOSiteCloneController(CementBaseController):
                 f.write(content)
 
     def _setup_letsencrypt(self, domain, webroot):
-        acme_domains = [domain, f"www.{domain}"]
+        (domain_type, _) = WODomain.getlevel(self, domain)
+        parts = domain.split('.')
+        if domain_type == 'subdomain' or (domain_type == '' and len(parts) > 2):
+            acme_domains = [domain]
+        else:
+            acme_domains = [domain, f"www.{domain}"]
         acmedata = dict(dns=False, acme_dns='dns_cf',
                         dnsalias=False, acme_alias='', keylength='')
         if self.app.config.has_section('letsencrypt'):
@@ -123,7 +128,9 @@ class WOSiteCloneController(CementBaseController):
             Log.error(self, f"source site {src} does not exist")
 
         php_key = ("php" + src_info.php_version).replace('.', '')
-        data = dict(site_name=dest, www_domain=f"www.{dest}", webroot=dest_webroot,
+        (dest_type, _) = WODomain.getlevel(self, dest)
+        www_domain = f"www.{dest}" if dest_type != 'subdomain' else ''
+        data = dict(site_name=dest, www_domain=www_domain, webroot=dest_webroot,
                     static=False, basic=True, wp=False, wpfc=False, wpsc=False,
                     wprocket=False, wpce=False, wpredis=False,
                     multisite=False, wpsubdir=False, wo_php=php_key,
