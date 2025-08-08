@@ -79,3 +79,49 @@ def test_setup_letsencrypt(monkeypatch, tmp_path):
     assert calls['redirect'][0] == 'example.com'
     assert calls['update'][0] == 'example.com'
     assert calls['update'][1]['ssl'] is True
+
+
+def test_setup_letsencrypt_subdomain(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake_setupletsencrypt(self, domains, data):
+        calls['domains'] = domains
+        return True
+
+    monkeypatch.setattr(WOAcme, 'setupletsencrypt', fake_setupletsencrypt)
+    monkeypatch.setattr(WOAcme, 'deploycert', lambda self, domain: None)
+    monkeypatch.setattr(SSL, 'httpsredirect', lambda self, domain, domains, redirect=True: None)
+    monkeypatch.setattr(SSL, 'siteurlhttps', lambda self, domain: None)
+    monkeypatch.setattr(WOService, 'reload_service', lambda self, service: True)
+    monkeypatch.setattr(WOGit, 'add', lambda self, paths, msg="": None)
+    monkeypatch.setattr(site_clone, 'updateSiteInfo', lambda self, domain, **kwargs: None)
+
+    with WOTestApp(argv=[]) as app:
+        controller = WOSiteCloneController()
+        controller.app = app
+        controller._setup_letsencrypt('sub.example.com', str(tmp_path))
+
+    assert calls['domains'] == ['sub.example.com']
+
+
+def test_virtualconf_skips_www_for_subdomains():
+    with WOTestApp(argv=[]) as app:
+        data = {
+            'site_name': 'blog.example.com',
+            'www_domain': '',
+            'multisite': False,
+        }
+        content = app.render(data, 'virtualconf.mustache')
+    assert 'server_name blog.example.com;' in content
+    assert 'www.blog.example.com' not in content
+
+
+def test_virtualconf_includes_www_for_root_domain():
+    with WOTestApp(argv=[]) as app:
+        data = {
+            'site_name': 'example.com',
+            'www_domain': 'www.example.com',
+            'multisite': False,
+        }
+        content = app.render(data, 'virtualconf.mustache')
+    assert 'server_name example.com www.example.com;' in content
