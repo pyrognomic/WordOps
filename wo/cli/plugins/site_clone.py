@@ -163,7 +163,6 @@ class WOSiteCloneController(CementBaseController):
         addNewSite(self, dest, stype, cache, dest_webroot,
                    php_version=src_info.php_version)
         data = setupdatabase(self, data)
-        setupwordpress(self, data, vhostonly=True)
         updateSiteInfo(self, dest, db_name=data['wo_db_name'],
                        db_user=data['wo_db_user'],
                        db_password=data['wo_db_pass'],
@@ -180,7 +179,12 @@ class WOSiteCloneController(CementBaseController):
         conf_src = os.path.join(WOVar.wo_webroot, src, 'wp-config.php')
         conf_dest = os.path.join(WOVar.wo_webroot, dest, 'wp-config.php')
         src_db = _parse_db_config(conf_src)
-        dest_db = _parse_db_config(conf_dest)
+        dest_db = {
+            'DB_NAME': data['wo_db_name'],
+            'DB_USER': data['wo_db_user'],
+            'DB_PASSWORD': data['wo_db_pass'],
+            'DB_HOST': data['wo_db_host'],
+        }
 
         backup = f"/tmp/{src.replace('.', '_')}.sql"
         dump_cmd = (
@@ -197,13 +201,10 @@ class WOSiteCloneController(CementBaseController):
         dest_root = os.path.join(WOVar.wo_webroot, dest, 'htdocs/')
         WOFileUtils.rm(self, dest_root)
         WOFileUtils.copyfiles(self, src_root.rstrip('/'), dest_root.rstrip('/'))
-        WOShellExec.cmd_exec(
-            self,
-            f"{WOVar.wo_wpcli_path} search-replace {src} {dest} --path={dest_root} --all-tables --allow-root",
-        )
-        setwebrootpermissions(self, dest_root.rstrip('/'), data['php_fpm_user'])
 
-        if not pargs.new:
+        if pargs.new:
+            setupwordpress(self, data, vhostonly=True)
+        else:
             WOFileUtils.copyfile(self, conf_src, conf_dest)
             with open(conf_dest, 'r') as f:
                 content = f.read()
@@ -218,6 +219,12 @@ class WOSiteCloneController(CementBaseController):
             with open(conf_dest, 'w') as f:
                 f.write(content)
             WOFileUtils.chown(self, conf_dest, WOVar.wo_php_user, WOVar.wo_php_user)
+
+        WOShellExec.cmd_exec(
+            self,
+            f"{WOVar.wo_wpcli_path} search-replace {src} {dest} --path={dest_root} --all-tables --allow-root",
+        )
+        setwebrootpermissions(self, dest_root.rstrip('/'), data['php_fpm_user'])
 
         WOFileUtils.rm(self, backup)
         if pargs.letsencrypt:
