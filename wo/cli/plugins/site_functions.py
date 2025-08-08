@@ -363,24 +363,25 @@ def setupwordpress(self, data, vhostonly=False):
     if 'wp-pass' in data.keys() and data['wp-pass']:
         wo_wp_pass = data['wp-pass']
 
-    Log.info(self, "Downloading WordPress \t\t", end='')
-    WOFileUtils.chdir(self, '{0}/htdocs/'.format(wo_site_webroot))
-    try:
-        if WOShellExec.cmd_exec(self, "wp --allow-root core"
-                                " download"):
-            pass
-        else:
-            Log.info(self, "[" + Log.ENDC + Log.FAIL +
-                     "Fail" + Log.OKBLUE + "]")
-            raise SiteError("download WordPress core failed")
-    except CommandExecutionError:
-        Log.info(self, "[" + Log.ENDC + Log.FAIL + "Fail" + Log.OKBLUE + "]")
-        raise SiteError("download WordPress core failed")
-
-    Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
-
     if not (data['wo_db_name'] and data['wo_db_user'] and data['wo_db_pass']):
         data = setupdatabase(self, data)
+
+    WOFileUtils.chdir(self, '{0}/htdocs/'.format(wo_site_webroot))
+    if not vhostonly:
+        Log.info(self, "Downloading WordPress \t\t", end='')
+        try:
+            if WOShellExec.cmd_exec(self, "wp --allow-root core"
+                                    " download"):
+                pass
+            else:
+                Log.info(self, "[" + Log.ENDC + Log.FAIL +
+                         "Fail" + Log.OKBLUE + "]")
+                raise SiteError("download WordPress core failed")
+        except CommandExecutionError:
+            Log.info(self, "[" + Log.ENDC + Log.FAIL + "Fail" + Log.OKBLUE + "]")
+            raise SiteError("download WordPress core failed")
+
+        Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
     if prompt_wpprefix == 'True' or prompt_wpprefix == 'true':
         try:
             wo_wp_prefix = input('Enter the WordPress table prefix [wp_]: ')
@@ -517,16 +518,28 @@ def setupwordpress(self, data, vhostonly=False):
                                                        os.pardir))), False)
         raise SiteError("Unable to move wp-config.php")
 
+    if vhostonly:
+        WOFileUtils.chdir(self, '{0}'.format(wo_site_webroot))
+        WOFileUtils.rm(self, "{0}/htdocs".format(wo_site_webroot))
+        WOFileUtils.mkdir(self, "{0}/htdocs".format(wo_site_webroot))
+        WOFileUtils.chown(self, "{0}/htdocs".format(wo_site_webroot),
+                          'www-data', 'www-data')
+        wp_creds = dict(wp_user=wo_wp_user, wp_pass=wo_wp_pass,
+                        wp_email=wo_wp_email)
+        return wp_creds
+
     if not wo_wp_user:
         wo_wp_user = WOVar.wo_user
-        while not wo_wp_user:
-            Log.warn(self, "Username can have only alphanumeric"
-                     "characters, spaces, underscores, hyphens,"
-                     "periods and the @ symbol.")
-            try:
-                wo_wp_user = input('Enter WordPress username: ')
-            except EOFError:
-                raise SiteError("input WordPress username failed")
+    username_regex = r'^[A-Za-z0-9 _\.\-@]+$'
+    while (not wo_wp_user) or (not re.match(username_regex, wo_wp_user)):
+        Log.warn(self, "Username can have only alphanumeric"
+                 "characters, spaces, underscores, hyphens,"
+                 "periods and the @ symbol.")
+        try:
+            wo_wp_user = input('Enter WordPress username: ')
+        except EOFError:
+            raise SiteError("input WordPress username failed")
+
     if not wo_wp_pass:
         wo_wp_pass = wo_random_pass
 
@@ -706,19 +719,6 @@ def setupwordpress(self, data, vhostonly=False):
             .format(WOVar.wo_wpcli_path) +
             "config set WP_CACHE "
             "true --raw\"")
-
-    if vhostonly:
-        try:
-            WOShellExec.cmd_exec(self, "/bin/bash -c \"{0} --allow-root "
-                                 .format(WOVar.wo_wpcli_path) +
-                                 "db clean --yes\"")
-            WOFileUtils.chdir(self, '{0}'.format(wo_site_webroot))
-            WOFileUtils.rm(self, "{0}/htdocs".format(wo_site_webroot))
-            WOFileUtils.mkdir(self, "{0}/htdocs".format(wo_site_webroot))
-            WOFileUtils.chown(self, "{0}/htdocs".format(wo_site_webroot),
-                              'www-data', 'www-data')
-        except CommandExecutionError:
-            raise SiteError("Cleaning WordPress install failed")
 
     wp_creds = dict(wp_user=wo_wp_user, wp_pass=wo_wp_pass,
                     wp_email=wo_wp_email)
