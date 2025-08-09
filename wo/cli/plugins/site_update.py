@@ -565,7 +565,9 @@ class WOSiteUpdateController(CementBaseController):
                 Log.error(self, "NGINX configuration check failed.")
 
             try:
-                sitebackup(self, data)
+                # Move webroot/config into the backup directory so the update
+                # process can recreate a clean site structure.
+                sitebackup(self, data, move_files=True, db_only=False, files_only=False)
             except Exception as e:
                 Log.debug(self, str(e))
 

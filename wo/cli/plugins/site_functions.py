@@ -861,7 +861,18 @@ def setwebrootpermissions(self, webroot, user=WOVar.wo_php_user):
         raise SiteError("problem occured while setting up webroot permissions")
 
 
-def sitebackup(self, data):
+def sitebackup(self, data, move_files=True, db_only=False, files_only=False):
+    """Backup a site and optionally move webroot/config files.
+
+    ``move_files`` controls whether WordPress "htdocs" and configuration
+    files are moved into the backup directory instead of copied.  This is
+    used by ``wo site update`` which expects the original webroot to be
+    removed so a fresh one can be created.  ``wo site backup`` passes
+    ``move_files=False`` to keep the live site untouched.
+
+    ``db_only`` and ``files_only`` limit the backup to the selected type of
+    data.
+    """
     wo_site_webroot = data['webroot']
     backup_path = wo_site_webroot + '/backup/{0}'.format(WOVar.wo_date)
     if not WOFileUtils.isexist(self, backup_path):
@@ -870,36 +881,28 @@ def sitebackup(self, data):
     WOFileUtils.copyfile(self, '/etc/nginx/sites-available/{0}'
                          .format(data['site_name']), backup_path)
 
-    if data['currsitetype'] in ['html', 'php', 'php72', 'php74',
-                                'php73', 'php80', 'php81', 'php82', 'php83', 'php84'
-                                'proxy', 'mysql']:
-        if not data['wp']:
-            Log.info(self, "Backing up Webroot \t\t", end='')
-            WOFileUtils.copyfiles(self, wo_site_webroot +
-                                  '/htdocs', backup_path + '/htdocs')
-            Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
+    if not db_only and data['currsitetype'] in ['html', 'php', 'php72', 'php74',
+                                                'php73', 'php80', 'php81', 'php82',
+                                                'php83', 'php84', 'proxy', 'mysql']:
+        Log.info(self, "Backing up Webroot \t\t", end='')
+        src = os.path.join(wo_site_webroot, 'htdocs')
+        dst = backup_path if move_files and data['wp'] else os.path.join(backup_path, 'htdocs')
+        if data['wp'] and move_files:
+            WOFileUtils.mvfile(self, src, dst)
         else:
-            Log.info(self, "Backing up Webroot \t\t", end='')
-            WOFileUtils.mvfile(self, wo_site_webroot + '/htdocs', backup_path)
-            Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
+            WOFileUtils.copyfiles(self, src, dst)
+        Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
 
     configfiles = glob.glob(wo_site_webroot + '/*-config.php')
     if not configfiles:
-        # search for wp-config.php inside htdocs/
         Log.debug(self, "Config files not found in {0}/ "
                   .format(wo_site_webroot))
-        if data['currsitetype'] in ['mysql']:
-            pass
-        else:
+        if data['currsitetype'] not in ['mysql']:
             Log.debug(self, "Searching wp-config.php in {0}/htdocs/ "
                       .format(wo_site_webroot))
             configfiles = glob.glob(wo_site_webroot + '/htdocs/wp-config.php')
 
-    # if configfiles and WOFileUtils.isexist(self, configfiles[0]):
-    #     wo_db_name = (WOFileUtils.grep(self, configfiles[0],
-    #                   'DB_NAME').split(',')[1]
-    #                   .split(')')[0].strip().replace('\'', ''))
-    if data['wo_db_name']:
+    if data['wo_db_name'] and not files_only:
         Log.info(self, 'Backing up database \t\t', end='')
         try:
             if not WOShellExec.cmd_exec(
@@ -915,12 +918,16 @@ def sitebackup(self, data):
             Log.info(self, "[" + Log.ENDC + "Fail" + Log.OKBLUE + "]")
             raise SiteError("mysqldump failed to backup database")
         Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
-        # move wp-config.php/wo-config.php to backup
+
+    if configfiles:
         if data['currsitetype'] in ['mysql', 'proxy']:
-            if data['php73'] is True and not data['wp']:
+            if data.get('php73') is True and not data['wp']:
                 WOFileUtils.copyfile(self, configfiles[0], backup_path)
             else:
-                WOFileUtils.mvfile(self, configfiles[0], backup_path)
+                if move_files and not db_only:
+                    WOFileUtils.mvfile(self, configfiles[0], backup_path)
+                else:
+                    WOFileUtils.copyfile(self, configfiles[0], backup_path)
         else:
             WOFileUtils.copyfile(self, configfiles[0], backup_path)
 
