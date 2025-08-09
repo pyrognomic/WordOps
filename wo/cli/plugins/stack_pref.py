@@ -295,6 +295,26 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                            '/etc/nginx/'
                            'sites-enabled/'
                            'default'])
+                
+            cert_path = '/etc/ssl/certs/ssl-cert-snakeoil.pem'
+            key_path = '/etc/ssl/private/ssl-cert-snakeoil.key'
+            if (not os.path.isfile(cert_path) or
+                    not os.path.isfile(key_path)):
+                Log.info(
+                    self,
+                    'Generating default self-signed certificate',
+                )
+                os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+                os.makedirs(os.path.dirname(key_path), exist_ok=True)
+                try:
+                    WOShellExec.cmd_exec(
+                        self,
+                        f"openssl req -x509 -nodes -days 3650 "
+                        f"-newkey rsa:2048 -subj '/CN=localhost/' "
+                        f"-keyout {key_path} -out {cert_path}",
+                    )
+                except CommandExecutionError as e:
+                    Log.debug(self, str(e))
 
             # 22222 port settings
             if os.path.exists('/etc/nginx/sites-available/22222'):
