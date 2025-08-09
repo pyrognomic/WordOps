@@ -5,17 +5,28 @@ more_set_headers "X-protocol : $server_protocol always";
 # Advertise HTTP/3 QUIC support (required)
 more_set_headers 'Alt-Svc h3=":$server_port"; ma=86400';
 
+# Increase max number of concurrenty HTTP/3 request streams in a connection
+http3_max_concurrent_streams 1024;
+
+# Increase the size of the buffer used for reading and writing of the QUIC streams
+http3_stream_buffer_size 1024k;
+
+# Enable sending in optimized batch mode using segmentation offloading
+quic_gso on;
+
 # enable [QUIC address validation](https://datatracker.ietf.org/doc/html/rfc9000#name-address-validation)
 quic_retry on;
 
 # Listen on port 443 with HTTP/3 QUIC
-listen 443 quic reuseport;
-listen [::]:443 quic reuseport;
-
+http3 on;
+listen 443 quic;
+listen [::]:443 quic;
+{{/quic}}
 # listen on port 443 with HTTP/2
+http2 on;
 listen 443 ssl;
 listen [::]:443 ssl;
-{{/quic}}
+
 ssl_certificate     {{ssl_live_path}}/{{domain}}/fullchain.pem;
 ssl_certificate_key     {{ssl_live_path}}/{{domain}}/key.pem;
 ssl_trusted_certificate {{ssl_live_path}}/{{domain}}/ca.pem;

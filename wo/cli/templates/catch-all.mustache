@@ -1,0 +1,28 @@
+# Catch-all/default
+server {
+    listen 80      default_server;
+    listen [::]:80 default_server;
+
+    # TCP (HTTPS): default, so unknown SNI still completes TLS
+    http2 on;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+
+    # UDP (HTTP/3) — define ONCE per IP:443
+    http3 on;
+    listen 443      quic reuseport default_server;
+    listen [::]:443 quic reuseport default_server;
+
+    server_name _;
+
+    # Generic cert so the default server can handshake;
+    # your named vhosts will use their own certs via SNI.
+    ssl_certificate     /etc/ssl/certs/ssl-cert-snakeoil.pem;
+    ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
+
+    # Optional: advertise H3 globally
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+
+    # Don’t serve content here — drop unknown hosts
+    return 444;
+}
