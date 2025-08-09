@@ -295,7 +295,7 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                            '/etc/nginx/'
                            'sites-enabled/'
                            'default'])
-
+                
             cert_path = '/etc/ssl/certs/ssl-cert-snakeoil.pem'
             key_path = '/etc/ssl/private/ssl-cert-snakeoil.key'
             if (not os.path.isfile(cert_path) or
