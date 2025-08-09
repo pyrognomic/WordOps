@@ -282,6 +282,40 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                           '/etc/nginx/sites-available')
                 os.makedirs('/etc/nginx/sites-enabled')
 
+            # Default catch-all vhost
+            data = dict()
+            WOTemplate.deploy(self,
+                              '/etc/nginx/sites-available/default',
+                              'catch-all.mustache', data, overwrite=True)
+            if not os.path.islink('/etc/nginx/sites-enabled/default'):
+                WOFileUtils.create_symlink(
+                    self, ['/etc/nginx/'
+                           'sites-available/'
+                           'default',
+                           '/etc/nginx/'
+                           'sites-enabled/'
+                           'default'])
+
+            cert_path = '/etc/ssl/certs/ssl-cert-snakeoil.pem'
+            key_path = '/etc/ssl/private/ssl-cert-snakeoil.key'
+            if (not os.path.isfile(cert_path) or
+                    not os.path.isfile(key_path)):
+                Log.info(
+                    self,
+                    'Generating default self-signed certificate',
+                )
+                os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+                os.makedirs(os.path.dirname(key_path), exist_ok=True)
+                try:
+                    WOShellExec.cmd_exec(
+                        self,
+                        f"openssl req -x509 -nodes -days 3650 "
+                        f"-newkey rsa:2048 -subj '/CN=localhost/' "
+                        f"-keyout {key_path} -out {cert_path}",
+                    )
+                except CommandExecutionError as e:
+                    Log.debug(self, str(e))
+
             # 22222 port settings
             if os.path.exists('/etc/nginx/sites-available/22222'):
                 Log.debug(self, "looking for the current backend port")
