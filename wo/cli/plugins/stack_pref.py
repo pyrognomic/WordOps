@@ -282,6 +282,20 @@ def post_pref(self, apt_packages, packages, upgrade=False):
                           '/etc/nginx/sites-available')
                 os.makedirs('/etc/nginx/sites-enabled')
 
+            # Default catch-all vhost
+            data = dict()
+            WOTemplate.deploy(self,
+                              '/etc/nginx/sites-available/default',
+                              'catch-all.mustache', data, overwrite=True)
+            if not os.path.islink('/etc/nginx/sites-enabled/default'):
+                WOFileUtils.create_symlink(
+                    self, ['/etc/nginx/'
+                           'sites-available/'
+                           'default',
+                           '/etc/nginx/'
+                           'sites-enabled/'
+                           'default'])
+
             # 22222 port settings
             if os.path.exists('/etc/nginx/sites-available/22222'):
                 Log.debug(self, "looking for the current backend port")
