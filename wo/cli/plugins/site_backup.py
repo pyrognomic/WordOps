@@ -6,7 +6,7 @@ from datetime import datetime
 from cement.core.controller import CementBaseController, expose
 
 from wo.cli.plugins.site_functions import SiteError, check_domain_exists
-from wo.cli.plugins.sitedb import getSiteInfo
+from wo.cli.plugins.sitedb import getSiteInfo, getAllsites
 from wo.core.domainvalidate import WODomain
 from wo.core.logging import Log
 from wo.core.fileutils import WOFileUtils
@@ -32,6 +32,8 @@ class WOSiteBackupController(CementBaseController):
              dict(help='backup only site files', action='store_true')),
             (['--path'],
              dict(help='directory to store backups')),
+            (['--all'],
+             dict(help='backup all sites', action='store_true')),
         ]
 
     def _backup_site(self, site, backup_root=None, backup_db=True, backup_files=True):
@@ -125,6 +127,31 @@ class WOSiteBackupController(CementBaseController):
     def default(self):
         pargs = self.app.pargs
 
+        backup_db = True
+        backup_files = True
+        if pargs.db and not pargs.files:
+            backup_files = False
+        if pargs.files and not pargs.db:
+            backup_db = False
+
+        if pargs.all:
+            if pargs.site_name:
+                Log.error(self, '`--all` option cannot be used with site name provided')
+            sites = getAllsites(self)
+            if not sites:
+                return
+            for site in sites:
+                try:
+                    self._backup_site(
+                        site.sitename,
+                        backup_root=pargs.path,
+                        backup_db=backup_db,
+                        backup_files=backup_files,
+                    )
+                except Exception as e:
+                    Log.debug(self, str(e))
+            return
+
         if not pargs.site_name:
             try:
                 while not pargs.site_name:
@@ -137,13 +164,6 @@ class WOSiteBackupController(CementBaseController):
         wo_domain = WODomain.validate(self, pargs.site_name)
         if not check_domain_exists(self, wo_domain):
             Log.error(self, f"site {wo_domain} does not exist")
-
-        backup_db = True
-        backup_files = True
-        if pargs.db and not pargs.files:
-            backup_files = False
-        if pargs.files and not pargs.db:
-            backup_db = False
 
         try:
             self._backup_site(

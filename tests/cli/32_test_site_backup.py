@@ -66,3 +66,23 @@ def test_backup_creates_expected_structure(tmp_path, monkeypatch):
     meta = json.loads((extracted / 'vhost.json').read_text())
     assert meta['httpauth_user'] == 'user'
     assert meta['httpauth_pass'] == 'pass'
+
+
+def test_cli_backup_all(monkeypatch):
+    sites = [SimpleNamespace(sitename='a.com'), SimpleNamespace(sitename='b.com')]
+    called = []
+    from wo.cli.plugins import site_backup as site_backup_mod
+    monkeypatch.setattr(site_backup_mod, 'getAllsites', lambda self: sites)
+
+    def fake_backup(self, site, backup_root=None, backup_db=True, backup_files=True):
+        called.append(site)
+
+    monkeypatch.setattr(site_backup_mod.WOSiteBackupController, '_backup_site', fake_backup)
+
+    with WOTestApp(argv=[]) as app:
+        controller = WOSiteBackupController()
+        controller.app = app
+        controller.app._parsed_args = SimpleNamespace(all=True, site_name=None, db=False, files=False, path=None)
+        controller.default()
+
+    assert set(called) == {'a.com', 'b.com'}
