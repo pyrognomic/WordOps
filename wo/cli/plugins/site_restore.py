@@ -175,6 +175,38 @@ class WOSiteRestoreController(CementBaseController):
             php_version=php_version,
         )
 
+        # setup wp-login.php protection if exists
+        slug = site.replace('.', '-').lower()
+        acl_dir = f'/etc/nginx/acl/{slug}'
+        os.makedirs(acl_dir, exist_ok=True)
+
+        protected = os.path.join(acl_dir, 'protected.conf')
+        open(protected, 'w').close()
+
+        credentials = os.path.join(acl_dir, 'credentials')
+        open(credentials, 'w').close()
+
+        pdata = {
+            'slug': slug,
+            'secure': False,
+            'wp': 'wp' in site_type,
+            'php_ver': php_version.replace('.', ''),
+            'pool_name': slug,
+        }
+
+        http_user = meta.get('httpauth_user')
+        http_pass = meta.get('httpauth_pass')
+        if http_user and http_pass:
+            pdata['secure'] = True
+            with open(credentials, 'w') as cred_file:
+                cred_file.write(f"{http_user}:{http_pass}\n")
+
+        WOTemplate.deploy(self, protected, 'protected.mustache', pdata, overwrite=True)
+
+        if not WOService.reload_service(self, 'nginx'):
+            Log.error(self, "service nginx reload failed. check `nginx -t`")
+        Log.info(self, f"Successfully secured {site}")
+
         setup_php_fpm(self, data)
         setwebrootpermissions(self, site_path, data['php_fpm_user'])
         WOService.reload_service(self, 'nginx')
@@ -193,29 +225,6 @@ class WOSiteRestoreController(CementBaseController):
 
         dump_file = os.path.join(backup_dir, f'{site}.sql')
         self._restore_db(dump_file, meta)
-
-        http_user = meta.get('httpauth_user')
-        http_pass = meta.get('httpauth_pass')
-        if http_user and http_pass:
-            slug = site.replace('.', '-').lower()
-            acl_dir = f'/etc/nginx/acl/{slug}'
-            os.makedirs(acl_dir, exist_ok=True)
-            protected = os.path.join(acl_dir, 'protected.conf')
-            credentials = os.path.join(acl_dir, 'credentials')
-            with open(credentials, 'w') as cred_file:
-                cred_file.write(f"{http_user}:{http_pass}\n")
-            pdata = {
-                'slug': slug,
-                'secure': True,
-                'wp': 'wp' in site_type,
-                'php_ver': php_version.replace('.', ''),
-                'pool_name': slug,
-            }
-            WOTemplate.deploy(self, protected, 'protected.mustache', pdata, overwrite=True)
-            WOGit.add(self, ['/etc/nginx'], msg=f"Secured {site} with basic auth")
-            if not WOService.reload_service(self, 'nginx'):
-                Log.error(self, "service nginx reload failed. check `nginx -t`")
-            Log.info(self, f"Successfully secured {site}")
 
         if meta.get('is_ssl'):
             self._setup_letsencrypt(site, site_path)
