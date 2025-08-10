@@ -11,6 +11,8 @@ from wo.cli.plugins.sitedb import (deleteSiteInfo, getAllsites,
 from wo.cli.plugins.site_create import WOSiteCreateController
 from wo.cli.plugins.site_update import WOSiteUpdateController
 from wo.cli.plugins.site_clone import WOSiteCloneController
+from wo.cli.plugins.site_backup import WOSiteBackupController
+from wo.cli.plugins.site_restore import WOSiteRestoreController
 from wo.core.domainvalidate import WODomain
 from wo.core.fileutils import WOFileUtils
 from wo.core.git import WOGit
@@ -504,7 +506,10 @@ def load(app):
     app.handler.register(WOSiteUpdateController)
     app.handler.register(WOSiteCreateController)
     app.handler.register(WOSiteCloneController)
+    app.handler.register(WOSiteBackupController)
+    app.handler.register(WOSiteRestoreController)
     app.handler.register(WOSiteListController)
     app.handler.register(WOSiteEditController)
+
     # register a hook (function) to run after arguments are parsed.
     app.hook.register('post_argument_parsing', wo_site_hook)

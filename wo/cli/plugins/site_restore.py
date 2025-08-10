@@ -166,7 +166,3 @@ class WOSiteRestoreController(CementBaseController):
                 except Exception as e:
                     Log.debug(self, str(e))
                     Log.error(self, f'Failed to restore {entry}')
-
-
-def load(app):
-    app.handler.register(WOSiteRestoreController)
