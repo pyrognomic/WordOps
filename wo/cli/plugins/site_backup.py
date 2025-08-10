@@ -14,7 +14,7 @@ from wo.core.shellexec import WOShellExec, CommandExecutionError
 
 
 def _timestamp():
-    return datetime.utcnow().strftime('%Y-%m-%d_%H%M%S')
+    return datetime.utcnow().strftime('%Y-%m-%d_%H-%M-%S')
 
 
 class WOSiteBackupController(CementBaseController):
