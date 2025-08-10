@@ -11,6 +11,7 @@ from wo.cli.plugins.sitedb import getAllsites, getSiteInfo
 from wo.core.domainvalidate import WODomain
 from wo.core.logging import Log
 from wo.core.variables import WOVar
+from wo.core.fileutils import WOFileUtils
 
 
 class WOSiteBackupController(CementBaseController):
@@ -53,8 +54,8 @@ class WOSiteBackupController(CementBaseController):
                 db_only=db_only,
                 files_only=files_only,
             )
-
             backup_path = os.path.join(siteinfo.site_path, 'backup', WOVar.wo_date)
+
             metadata = {
                 'id': siteinfo.id,
                 'sitename': siteinfo.sitename,
@@ -73,6 +74,20 @@ class WOSiteBackupController(CementBaseController):
                 'is_hhvm': siteinfo.is_hhvm,
                 'php_version': siteinfo.php_version,
             }
+
+            slug = site.replace('.', '-').lower()
+            cred_file = f'/etc/nginx/acl/{slug}/credentials'
+            if os.path.isfile(cred_file):
+                try:
+                    with open(cred_file) as cf:
+                        cred_line = cf.readline().strip()
+                    if ':' in cred_line:
+                        user, passwd = cred_line.split(':', 1)
+                        metadata['httpauth_user'] = user
+                        metadata['httpauth_pass'] = passwd
+                    WOFileUtils.copyfile(self, cred_file, backup_path)
+                except OSError as e:
+                    Log.debug(self, str(e))
 
             with open(os.path.join(backup_path, 'vhost.json'), 'w') as f:
                 json.dump(metadata, f, default=str, indent=2)
