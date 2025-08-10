@@ -208,8 +208,6 @@ class WOSiteRestoreController(CementBaseController):
         Log.info(self, f"Successfully secured {site}")
 
         setup_php_fpm(self, data)
-        setwebrootpermissions(self, site_path, data['php_fpm_user'])
-        WOService.reload_service(self, 'nginx')
 
         src_root = os.path.join(backup_dir, 'htdocs')
         if os.path.isdir(src_root):
@@ -222,6 +220,9 @@ class WOSiteRestoreController(CementBaseController):
             cfg_src = os.path.join(backup_dir, configs[0])
             cfg_dest = os.path.join(site_path, os.path.basename(cfg_src))
             WOFileUtils.copyfile(self, cfg_src, cfg_dest)
+
+        setwebrootpermissions(self, site_path, data['php_fpm_user'])
+        WOService.reload_service(self, 'nginx')
 
         dump_file = os.path.join(backup_dir, f'{site}.sql')
         self._restore_db(dump_file, meta)
