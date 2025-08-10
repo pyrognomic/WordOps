@@ -85,7 +85,6 @@ class WOSiteBackupController(CementBaseController):
                         user, passwd = cred_line.split(':', 1)
                         metadata['httpauth_user'] = user
                         metadata['httpauth_pass'] = passwd
-                    WOFileUtils.copyfile(self, cred_file, backup_path)
                 except OSError as e:
                     Log.debug(self, str(e))
 
