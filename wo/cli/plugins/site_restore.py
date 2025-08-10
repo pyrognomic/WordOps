@@ -1,15 +1,32 @@
 import json
 import os
+import tempfile
 
 from cement.core.controller import CementBaseController, expose
 
-from wo.cli.plugins.sitedb import addNewSite
-from wo.cli.plugins.site_functions import SiteError, setup_php_fpm, setupdomain
+from wo.cli.plugins.site_functions import (
+    check_domain_exists,
+    pre_run_checks,
+    setupdomain,
+    setup_php_fpm,
+    setwebrootpermissions,
+)
+from wo.cli.plugins.sitedb import addNewSite, updateSiteInfo
+from wo.core.domainvalidate import WODomain
 from wo.core.fileutils import WOFileUtils
 from wo.core.logging import Log
-from wo.core.mysql import (MySQLConnectionError, StatementExcecutionError,
-                           WOMysql)
+from wo.core.mysql import (
+    MySQLConnectionError,
+    StatementExcecutionError,
+    WOMysql,
+)
+from wo.core.nginxhashbucket import hashbucket
 from wo.core.shellexec import CommandExecutionError, WOShellExec
+from wo.core.services import WOService
+from wo.core.template import WOTemplate
+from wo.core.git import WOGit
+from wo.core.acme import WOAcme
+from wo.core.sslutils import SSL
 
 
 class WOSiteRestoreController(CementBaseController):
@@ -17,49 +34,108 @@ class WOSiteRestoreController(CementBaseController):
         label = 'restore'
         stacked_on = 'site'
         stacked_type = 'nested'
-        description = ('restore sites from a backup directory')
+        description = 'restore site from backup'
         arguments = [
-            (['backup_path'],
-             dict(help='path to directory containing vhost backups', nargs='?')),
+            (['backup'], dict(help='path to backup archive or directory', nargs='?')),
         ]
 
-    def _restore_vhost(self, vhost_dir):
-        """Restore a single vhost from its backup directory."""
-        meta_file = os.path.join(vhost_dir, 'vhost.json')
-        if not os.path.isfile(meta_file):
-            Log.debug(self, f'Skipping {vhost_dir}, vhost.json not found')
-            return
+    def _extract_backup(self, path):
+        if os.path.isdir(path):
+            return path
+        tmpdir = tempfile.mkdtemp(prefix='wo-restore-')
+        try:
+            WOShellExec.cmd_exec(self, f'tar --zstd -xf {path} -C {tmpdir}')
+        except CommandExecutionError as e:
+            Log.debug(self, str(e))
+            Log.error(self, 'failed to extract backup archive')
+        entries = os.listdir(tmpdir)
+        if not entries:
+            Log.error(self, 'invalid backup archive')
+        return os.path.join(tmpdir, entries[0])
 
-        with open(meta_file, 'r') as f:
+    def _restore_db(self, dump_file, meta):
+        db_name = meta.get('db_name')
+        db_user = meta.get('db_user')
+        db_pass = meta.get('db_password')
+        db_host = meta.get('db_host', 'localhost')
+        if not db_name or not os.path.isfile(dump_file):
+            return
+        try:
+            WOMysql.execute(self, f"CREATE DATABASE IF NOT EXISTS `{db_name}`")
+            if db_user:
+                WOMysql.execute(
+                    self,
+                    f"CREATE USER IF NOT EXISTS `{db_user}`@`{db_host}` IDENTIFIED BY '{db_pass}'",
+                    log=False,
+                )
+                WOMysql.execute(
+                    self,
+                    f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO `{db_user}`@`{db_host}`",
+                    log=False,
+                )
+            WOShellExec.cmd_exec(self, f'mariadb {db_name} < {dump_file}', log=False)
+        except (MySQLConnectionError, StatementExcecutionError, CommandExecutionError) as e:
+            Log.debug(self, str(e))
+            Log.warn(self, 'Failed to restore database')
+
+    def _setup_letsencrypt(self, domain, webroot):
+        (domain_type, _) = WODomain.getlevel(self, domain)
+        parts = domain.split('.')
+        if domain_type == 'subdomain' or (domain_type == '' and len(parts) > 2):
+            acme_domains = [domain]
+        else:
+            acme_domains = [domain, f"www.{domain}"]
+        acmedata = dict(dns=False, acme_dns='dns_cf',
+                        dnsalias=False, acme_alias='', keylength='')
+        if self.app.config.has_section('letsencrypt'):
+            acmedata['keylength'] = self.app.config.get('letsencrypt',
+                                                        'keylength')
+        else:
+            acmedata['keylength'] = 'ec-384'
+        if WOAcme.setupletsencrypt(self, acme_domains, acmedata):
+            WOAcme.deploycert(self, domain)
+            SSL.httpsredirect(self, domain, acme_domains, True)
+            SSL.siteurlhttps(self, domain)
+            if not WOService.reload_service(self, 'nginx'):
+                Log.error(self, 'service nginx reload failed. '
+                          'check issues with `nginx -t` command')
+            WOGit.add(self, [f"{webroot}/conf/nginx"],
+                      msg=f"Adding letsencrypts config of site: {domain}")
+            updateSiteInfo(self, domain, ssl=True)
+            Log.info(self, f"Congratulations! Successfully Configured SSL on "
+                     f"https://{domain}")
+
+    @expose(hide=True)
+    def default(self):
+        pargs = self.app.pargs
+        if not pargs.backup:
+            pargs.backup = input('Enter path to backup : ').strip()
+        backup_dir = self._extract_backup(pargs.backup)
+
+        meta_file = os.path.join(backup_dir, 'vhost.json')
+        if not os.path.isfile(meta_file):
+            Log.error(self, 'vhost.json not found in backup')
+        with open(meta_file) as f:
             meta = json.load(f)
 
-        site_name = meta.get('sitename')
-        if not site_name:
-            Log.debug(self, f'Missing sitename in {meta_file}')
-            return
+        site = meta.get('sitename')
+        if not site:
+            Log.error(self, 'invalid metadata: missing sitename')
+        if check_domain_exists(self, site):
+            Log.error(self, f'site {site} already exists')
 
-        site_path = meta.get('site_path', f'/var/www/{site_name}')
+        site_path = meta.get('site_path', os.path.join('/var/www', site))
         site_type = meta.get('site_type', 'html')
         cache_type = meta.get('cache_type', 'basic')
         php_version = meta.get('php_version', '8.1')
-        db_name = meta.get('db_name')
-        db_user = meta.get('db_user')
-        db_password = meta.get('db_password')
-        db_host = meta.get('db_host', 'localhost')
-        is_ssl = meta.get('is_ssl', False)
-        is_enabled = meta.get('is_enabled', True)
-        fs = meta.get('storage_fs', 'ext4')
-        db = meta.get('storage_db', 'mysql')
-        is_hhvm = meta.get('is_hhvm')
 
-        slug = site_name.replace('.', '-')
+        (domain_type, _) = WODomain.getlevel(self, site)
+        www_domain = f'www.{site}' if domain_type != 'subdomain' else ''
+        slug = site.replace('.', '-').lower()
         php_key = f"php{php_version.replace('.', '')}"
-        php_ver_short = php_version.replace('.', '')
-
-        # prepare data for domain and php-fpm setup
         data = {
-            'site_name': site_name,
-            'www_domain': f'www.{site_name}',
+            'site_name': site,
+            'www_domain': www_domain,
             'webroot': site_path,
             'static': site_type == 'html',
             'basic': cache_type == 'basic',
@@ -68,101 +144,81 @@ class WOSiteRestoreController(CementBaseController):
             'wpsc': cache_type == 'wpsc',
             'wprocket': cache_type == 'wprocket',
             'wpce': cache_type == 'wpce',
+            'wpredis': cache_type == 'wpredis',
             'multisite': site_type in ['wpsubdir', 'wpsubdomain'],
             'wpsubdir': site_type == 'wpsubdir',
-            'php_ver': php_ver_short,
             'wo_php': php_key,
+            'php_ver': php_key.replace('php', ''),
             'pool_name': slug,
             'php_fpm_user': f'php-{slug}',
         }
 
-        # generate nginx configuration and webroot structure
-        try:
-            setupdomain(self, data)
-        except SiteError as e:
-            Log.debug(self, str(e))
-            Log.error(self, f'Failed to setup domain for {site_name}')
-            return
+        pre_run_checks(self)
+        setupdomain(self, data)
+        hashbucket(self)
 
-        # restore original nginx configuration if present
-        nginx_conf = os.path.join(vhost_dir, site_name)
-        if os.path.exists(nginx_conf):
-            dest_conf = f'/etc/nginx/sites-available/{site_name}'
-            WOFileUtils.copyfile(self, nginx_conf, dest_conf)
-
-        # configure php-fpm pool
-        try:
-            setup_php_fpm(self, data)
-        except SiteError as e:
-            Log.debug(self, str(e))
-            Log.warn(self, f'Failed to configure php-fpm for {site_name}')
-
-        # ensure site enabled symlink
-        dest_conf = f'/etc/nginx/sites-available/{site_name}'
-        WOFileUtils.create_symlink(self, [dest_conf, f'/etc/nginx/sites-enabled/{site_name}'])
-
-        # Restore webroot if present
-        htdocs_src = os.path.join(vhost_dir, 'htdocs')
-        if os.path.isdir(htdocs_src):
-            dest_root = os.path.join(site_path, 'htdocs')
-            WOFileUtils.copyfiles(self, htdocs_src, dest_root)
-
-        # Restore database from dump when available
-        dump_file = os.path.join(vhost_dir, f'{db_name}.zst') if db_name else None
-        if dump_file and os.path.isfile(dump_file):
-            try:
-                WOMysql.execute(self, f"CREATE DATABASE IF NOT EXISTS `{db_name}`")
-                if db_user:
-                    WOMysql.execute(
-                        self,
-                        f"CREATE USER IF NOT EXISTS `{db_user}`@`{db_host}` IDENTIFIED BY '{db_password}'",
-                        log=False,
-                    )
-                    WOMysql.execute(
-                        self,
-                        f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO `{db_user}`@`{db_host}`",
-                        log=False,
-                    )
-                WOShellExec.cmd_exec(
-                    self, f'zstd -dc {dump_file} | mysql {db_name}', log=False)
-            except (MySQLConnectionError, StatementExcecutionError,
-                    CommandExecutionError) as e:
-                Log.debug(self, str(e))
-                Log.warn(self, f'Failed to restore database for {site_name}')
-
-        # Add entry to the WordOps database
         addNewSite(
             self,
-            site_name,
+            site,
             site_type,
             cache_type,
             site_path,
-            enabled=is_enabled,
-            ssl=is_ssl,
-            fs=fs,
-            db=db,
-            db_name=db_name,
-            db_user=db_user,
-            db_password=db_password,
-            db_host=db_host,
-            hhvm=is_hhvm,
+            enabled=meta.get('is_enabled', True),
+            ssl=meta.get('is_ssl', False),
+            fs=meta.get('storage_fs', 'ext4'),
+            db=meta.get('storage_db', 'mysql'),
+            db_name=meta.get('db_name'),
+            db_user=meta.get('db_user'),
+            db_password=meta.get('db_password'),
+            db_host=meta.get('db_host', 'localhost'),
+            hhvm=meta.get('is_hhvm'),
             php_version=php_version,
         )
 
-        Log.info(self, f'Restored {site_name}')
+        setup_php_fpm(self, data)
+        setwebrootpermissions(self, site_path, data['php_fpm_user'])
+        WOService.reload_service(self, 'nginx')
 
-    @expose(hide=True)
-    def default(self):
-        pargs = self.app.pargs
-        backup_root = pargs.backup_path if pargs.backup_path else os.getcwd()
-        if not os.path.isdir(backup_root):
-            Log.error(self, f'Backup path {backup_root} does not exist')
+        src_root = os.path.join(backup_dir, 'htdocs')
+        if os.path.isdir(src_root):
+            dest_root = os.path.join(site_path, 'htdocs')
+            WOFileUtils.rm(self, dest_root)
+            WOFileUtils.copyfiles(self, src_root, dest_root)
 
-        for entry in os.listdir(backup_root):
-            vhost_dir = os.path.join(backup_root, entry)
-            if os.path.isdir(vhost_dir):
-                try:
-                    self._restore_vhost(vhost_dir)
-                except Exception as e:
-                    Log.debug(self, str(e))
-                    Log.error(self, f'Failed to restore {entry}')
+        configs = [f for f in os.listdir(backup_dir) if f.endswith('-config.php') or f == 'wp-config.php']
+        if configs:
+            cfg_src = os.path.join(backup_dir, configs[0])
+            cfg_dest = os.path.join(site_path, os.path.basename(cfg_src))
+            WOFileUtils.copyfile(self, cfg_src, cfg_dest)
+
+        dump_file = os.path.join(backup_dir, f'{site}.sql')
+        self._restore_db(dump_file, meta)
+
+        http_user = meta.get('httpauth_user')
+        http_pass = meta.get('httpauth_pass')
+        if http_user and http_pass:
+            slug = site.replace('.', '-').lower()
+            acl_dir = f'/etc/nginx/acl/{slug}'
+            os.makedirs(acl_dir, exist_ok=True)
+            protected = os.path.join(acl_dir, 'protected.conf')
+            credentials = os.path.join(acl_dir, 'credentials')
+            with open(credentials, 'w') as cred_file:
+                cred_file.write(f"{http_user}:{http_pass}\n")
+            pdata = {
+                'slug': slug,
+                'secure': True,
+                'wp': 'wp' in site_type,
+                'php_ver': php_version.replace('.', ''),
+                'pool_name': slug,
+            }
+            WOTemplate.deploy(self, protected, 'protected.mustache', pdata, overwrite=True)
+            WOGit.add(self, ['/etc/nginx'], msg=f"Secured {site} with basic auth")
+            if not WOService.reload_service(self, 'nginx'):
+                Log.error(self, "service nginx reload failed. check `nginx -t`")
+            Log.info(self, f"Successfully secured {site}")
+
+        if meta.get('is_ssl'):
+            self._setup_letsencrypt(site, site_path)
+
+        Log.info(self, f'Restored {site}')
+
