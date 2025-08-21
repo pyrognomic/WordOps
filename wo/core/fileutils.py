@@ -61,19 +61,24 @@ class WOFileUtils():
             Log.debug(self, "{0}".format(e))
             Log.error(self, "Unable to reomove symbolic link ...\n")
 
-    def copyfiles(self, src, dest):
+    def copyfiles(self, src, dest, overwrite=False):
         """
         Copies files:
             src : source path
             dest : destination path
+            overwrite : replace destination if it already exists
 
             Recursively copy an entire directory tree rooted at src.
-            The destination directory, named by dst, must not already exist;
-            it will be created as well as missing parent directories.
+            The destination directory, named by dst, will be created as
+            well as missing parent directories. If ``overwrite`` is True
+            and the destination exists it will be replaced to avoid
+            ``copytree`` failures when cloning sites.
         """
         try:
             Log.debug(self, "Copying files, Source:{0}, Dest:{1}"
                       .format(src, dest))
+            if overwrite and os.path.exists(dest):
+                shutil.rmtree(dest)
             shutil.copytree(src, dest)
         except shutil.Error as e:
             Log.debug(self, "{0}".format(e))
