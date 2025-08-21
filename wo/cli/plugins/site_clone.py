@@ -193,11 +193,9 @@ class WOSiteCloneController(CementBaseController):
         )
         WOShellExec.cmd_exec(self, import_cmd)
 
-        src_root = os.path.join(WOVar.wo_webroot, src, 'htdocs/')
-        dest_root = os.path.join(WOVar.wo_webroot, dest, 'htdocs/')
-
-        WOFileUtils.rm(self, dest_root)
-        WOFileUtils.copyfiles(self, src_root.rstrip('/'), dest_root.rstrip('/'))
+        src_root = os.path.join(WOVar.wo_webroot, src, 'htdocs')
+        dest_root = os.path.join(WOVar.wo_webroot, dest, 'htdocs')
+        WOFileUtils.copyfiles(self, src_root, dest_root, overwrite=True)
 
         # generate new wp-config.php
         setupwordpress(self, data, vhostonly=True)
