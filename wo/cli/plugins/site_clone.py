@@ -45,13 +45,9 @@ class WOSiteCloneController(CementBaseController):
         arguments = [
             (['site_name'], dict(help='source site', nargs='?')),
             (['newsite_name'], dict(help='destination site', nargs='?')),
-            (['--new'], dict(help='do not copy wp-config from source', action='store_true')),
             (['--user'], dict(help='WordPress admin user')),
             (['--email'], dict(help='WordPress admin email')),
             (['--pass'], dict(help='WordPress admin password', dest='wppass')),
-            (['-le', '--letsencrypt'],
-             dict(help="configure letsencrypt ssl for the site",
-                  action='store_true')),
         ]
 
     def _copy_acl(self, src_slug, dest_slug, base='/etc/nginx/acl'):
@@ -170,11 +166,10 @@ class WOSiteCloneController(CementBaseController):
                        php_version=src_info.php_version,
                        stype=stype, cache=cache)
         setup_php_fpm(self, data)
-        setwebrootpermissions(self, dest_webroot, data['php_fpm_user'])
+
         src_slug = src.replace('.', '-').lower()
         dest_slug = dest.replace('.', '-').lower()
         self._copy_acl(src_slug, dest_slug)
-        WOService.reload_service(self, 'nginx')
 
         conf_src = os.path.join(WOVar.wo_webroot, src, 'wp-config.php')
         conf_dest = os.path.join(WOVar.wo_webroot, dest, 'wp-config.php')
@@ -192,6 +187,7 @@ class WOSiteCloneController(CementBaseController):
             f"--single-transaction --quick --add-drop-table --hex-blob {src_db['DB_NAME']} > {backup}"
         )
         WOShellExec.cmd_exec(self, dump_cmd)
+
         import_cmd = (
             f"mariadb --defaults-extra-file=/etc/mysql/conf.d/my.cnf {dest_db['DB_NAME']} < {backup}"
         )
@@ -199,34 +195,25 @@ class WOSiteCloneController(CementBaseController):
 
         src_root = os.path.join(WOVar.wo_webroot, src, 'htdocs/')
         dest_root = os.path.join(WOVar.wo_webroot, dest, 'htdocs/')
+
+        # generate new wp-config.php
+        setupwordpress(self, data, vhostonly=True)
+
         WOFileUtils.rm(self, dest_root)
         WOFileUtils.copyfiles(self, src_root.rstrip('/'), dest_root.rstrip('/'))
 
-        if pargs.new:
-            setupwordpress(self, data, vhostonly=True)
-        else:
-            WOFileUtils.copyfile(self, conf_src, conf_dest)
-            with open(conf_dest, 'r') as f:
-                content = f.read()
-            content = re.sub(r"define\('DB_NAME',\s*'[^']*'\)",
-                             f"define('DB_NAME', '{dest_db['DB_NAME']}')", content)
-            content = re.sub(r"define\('DB_USER',\s*'[^']*'\)",
-                             f"define('DB_USER', '{dest_db['DB_USER']}')", content)
-            content = re.sub(r"define\('DB_PASSWORD',\s*'[^']*'\)",
-                             f"define('DB_PASSWORD', '{dest_db['DB_PASSWORD']}')", content)
-            content = re.sub(r"define\('DB_HOST',\s*'[^']*'\)",
-                             f"define('DB_HOST', '{dest_db['DB_HOST']}')", content)
-            with open(conf_dest, 'w') as f:
-                f.write(content)
-            WOFileUtils.chown(self, conf_dest, WOVar.wo_php_user, WOVar.wo_php_user)
-
+        # change domain name
         WOShellExec.cmd_exec(
             self,
             f"{WOVar.wo_wpcli_path} search-replace {src} {dest} --path={dest_root} --all-tables --allow-root",
         )
+
+        # set permissions for webroot and wp-config.php
         setwebrootpermissions(self, dest_root.rstrip('/'), data['php_fpm_user'])
 
+        WOService.reload_service(self, 'nginx')
+
         WOFileUtils.rm(self, backup)
-        if pargs.letsencrypt:
+        if src_info.is_ssl:
             self._setup_letsencrypt(dest, dest_webroot)
         Log.info(self, f"Successfully cloned '{src}' → '{dest}'")
