@@ -200,6 +200,8 @@ class WOSiteCloneController(CementBaseController):
         # generate new wp-config.php
         setupwordpress(self, data, vhostonly=True)
 
+        WOFileUtils.copyfiles(self, src_root, dest_root, overwrite=True)
+
         # change domain name
         WOShellExec.cmd_exec(
             self,
@@ -207,7 +209,8 @@ class WOSiteCloneController(CementBaseController):
         )
 
         # set permissions for webroot and wp-config.php
-        setwebrootpermissions(self, dest_root.rstrip('/'), data['php_fpm_user'])
+        setwebrootpermissions(self, dest_root, data['php_fpm_user'])
+        WOFileUtils.chown(self, conf_dest, data['php_fpm_user'], data['php_fpm_user'])
 
         WOService.reload_service(self, 'nginx')
 
