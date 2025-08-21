@@ -196,11 +196,11 @@ class WOSiteCloneController(CementBaseController):
         src_root = os.path.join(WOVar.wo_webroot, src, 'htdocs/')
         dest_root = os.path.join(WOVar.wo_webroot, dest, 'htdocs/')
 
-        # generate new wp-config.php
-        setupwordpress(self, data, vhostonly=True)
-
         WOFileUtils.rm(self, dest_root)
         WOFileUtils.copyfiles(self, src_root.rstrip('/'), dest_root.rstrip('/'))
+
+        # generate new wp-config.php
+        setupwordpress(self, data, vhostonly=True)
 
         # change domain name
         WOShellExec.cmd_exec(
