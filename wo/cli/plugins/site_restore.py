@@ -9,7 +9,10 @@ from wo.cli.plugins.site_functions import (
     pre_run_checks,
     setupdomain,
     setup_php_fpm,
+    setup_letsencrypt,
     setwebrootpermissions,
+    extract_site_backup,
+    restore_database_from_dump,
 )
 from wo.cli.plugins.sitedb import addNewSite, updateSiteInfo
 from wo.core.domainvalidate import WODomain
@@ -39,78 +42,12 @@ class WOSiteRestoreController(CementBaseController):
             (['backup'], dict(help='path to backup archive or directory', nargs='?')),
         ]
 
-    def _extract_backup(self, path):
-        if os.path.isdir(path):
-            return path
-        tmpdir = tempfile.mkdtemp(prefix='wo-restore-')
-        try:
-            WOShellExec.cmd_exec(self, f'tar --zstd -xf {path} -C {tmpdir}')
-        except CommandExecutionError as e:
-            Log.debug(self, str(e))
-            Log.error(self, 'failed to extract backup archive')
-        entries = os.listdir(tmpdir)
-        if not entries:
-            Log.error(self, 'invalid backup archive')
-        return os.path.join(tmpdir, entries[0])
-
-    def _restore_db(self, dump_file, meta):
-        db_name = meta.get('db_name')
-        db_user = meta.get('db_user')
-        db_pass = meta.get('db_password')
-        db_host = meta.get('db_host', 'localhost')
-        if not db_name or not os.path.isfile(dump_file):
-            return
-        try:
-            WOMysql.execute(self, f"CREATE DATABASE IF NOT EXISTS `{db_name}`")
-            if db_user:
-                WOMysql.execute(
-                    self,
-                    f"CREATE USER IF NOT EXISTS `{db_user}`@`{db_host}` IDENTIFIED BY '{db_pass}'",
-                    log=False,
-                )
-                WOMysql.execute(
-                    self,
-                    f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO `{db_user}`@`{db_host}`",
-                    log=False,
-                )
-            WOShellExec.cmd_exec(self, f'mariadb {db_name} < {dump_file}', log=False)
-        except (MySQLConnectionError, StatementExcecutionError, CommandExecutionError) as e:
-            Log.debug(self, str(e))
-            Log.warn(self, 'Failed to restore database')
-
-    def _setup_letsencrypt(self, domain, webroot):
-        (domain_type, _) = WODomain.getlevel(self, domain)
-        parts = domain.split('.')
-        if domain_type == 'subdomain' or (domain_type == '' and len(parts) > 2):
-            acme_domains = [domain]
-        else:
-            acme_domains = [domain, f"www.{domain}"]
-        acmedata = dict(dns=False, acme_dns='dns_cf',
-                        dnsalias=False, acme_alias='', keylength='')
-        if self.app.config.has_section('letsencrypt'):
-            acmedata['keylength'] = self.app.config.get('letsencrypt',
-                                                        'keylength')
-        else:
-            acmedata['keylength'] = 'ec-384'
-        if WOAcme.setupletsencrypt(self, acme_domains, acmedata):
-            WOAcme.deploycert(self, domain)
-            SSL.httpsredirect(self, domain, acme_domains, True)
-            SSL.siteurlhttps(self, domain)
-            if not WOService.reload_service(self, 'nginx'):
-                Log.error(self, 'service nginx reload failed. '
-                          'check issues with `nginx -t` command')
-            WOGit.add(self, [f"{webroot}/conf/nginx"],
-                      msg=f"Adding letsencrypts config of site: {domain}")
-            updateSiteInfo(self, domain, ssl=True)
-            Log.info(self, f"Congratulations! Successfully Configured SSL on "
-                     f"https://{domain}")
-
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
         if not pargs.backup:
             pargs.backup = input('Enter path to backup : ').strip()
-        backup_dir = self._extract_backup(pargs.backup)
+        backup_dir = extract_site_backup(self, pargs.backup)
 
         meta_file = os.path.join(backup_dir, 'vhost.json')
         if not os.path.isfile(meta_file):
@@ -209,26 +146,74 @@ class WOSiteRestoreController(CementBaseController):
 
         setup_php_fpm(self, data)
 
-        src_root = os.path.join(backup_dir, 'htdocs')
-        if os.path.isdir(src_root):
-            dest_root = os.path.join(site_path, 'htdocs')
-            WOFileUtils.rm(self, dest_root)
-            WOFileUtils.copyfiles(self, src_root, dest_root)
+        # Create safety backup before restoration
+        existing_backup = None
+        dest_root = os.path.join(site_path, 'htdocs')
+        if os.path.exists(dest_root):
+            try:
+                import tempfile
+                existing_backup = tempfile.mkdtemp(prefix='wo-restore-safety-')
+                WOFileUtils.copyfiles(self, dest_root, os.path.join(existing_backup, 'htdocs'))
+                Log.debug(self, f"Created safety backup at: {existing_backup}")
+            except Exception as e:
+                Log.debug(self, f"Warning: Could not create safety backup: {str(e)}")
 
-        configs = [f for f in os.listdir(backup_dir) if f.endswith('-config.php') or f == 'wp-config.php']
-        if configs:
-            cfg_src = os.path.join(backup_dir, configs[0])
-            cfg_dest = os.path.join(site_path, os.path.basename(cfg_src))
-            WOFileUtils.copyfile(self, cfg_src, cfg_dest)
+        try:
+            # Restore website files
+            src_root = os.path.join(backup_dir, 'htdocs')
+            if os.path.isdir(src_root):
+                WOFileUtils.rm(self, dest_root)
+                WOFileUtils.copyfiles(self, src_root, dest_root)
+                Log.info(self, "Website files restored successfully")
+            else:
+                Log.warn(self, f"No htdocs directory found in backup: {src_root}")
 
-        setwebrootpermissions(self, site_path, data['php_fpm_user'])
-        WOService.reload_service(self, 'nginx')
+            # Restore configuration files
+            configs = [f for f in os.listdir(backup_dir) if f.endswith('-config.php') or f == 'wp-config.php']
+            if configs:
+                cfg_src = os.path.join(backup_dir, configs[0])
+                cfg_dest = os.path.join(site_path, os.path.basename(cfg_src))
+                WOFileUtils.copyfile(self, cfg_src, cfg_dest)
+                Log.info(self, f"Configuration file restored: {os.path.basename(cfg_src)}")
 
-        dump_file = os.path.join(backup_dir, f'{site}.sql')
-        self._restore_db(dump_file, meta)
+            # Set proper permissions
+            setwebrootpermissions(self, site_path, data['php_fpm_user'])
+
+            # Reload nginx
+            WOService.reload_service(self, 'nginx')
+
+            # Restore database
+            dump_file = os.path.join(backup_dir, f'{site}.sql')
+            if os.path.exists(dump_file):
+                restore_database_from_dump(self, dump_file, meta)
+                Log.info(self, "Database restored successfully")
+            else:
+                Log.warn(self, f"No database dump found: {dump_file}")
+
+            # Clean up safety backup on success
+            if existing_backup and os.path.exists(existing_backup):
+                import shutil
+                shutil.rmtree(existing_backup)
+
+        except Exception as e:
+            Log.error(self, f"Restore failed: {str(e)}")
+
+            # Attempt to restore from safety backup
+            if existing_backup and os.path.exists(existing_backup):
+                try:
+                    safety_htdocs = os.path.join(existing_backup, 'htdocs')
+                    if os.path.exists(safety_htdocs):
+                        if os.path.exists(dest_root):
+                            WOFileUtils.rm(self, dest_root)
+                        WOFileUtils.copyfiles(self, safety_htdocs, dest_root)
+                        Log.info(self, "Original files restored from safety backup")
+                except Exception as rollback_error:
+                    Log.error(self, f"Failed to rollback: {str(rollback_error)}")
+
+            raise SiteError(f"Site restoration failed: {str(e)}")
 
         if meta.get('is_ssl'):
-            self._setup_letsencrypt(site, site_path)
+            setup_letsencrypt(self, site, site_path)
 
         Log.info(self, f'Restored {site}')
 

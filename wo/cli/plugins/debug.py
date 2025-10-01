@@ -105,10 +105,8 @@ class WODebugController(CementBaseController):
                                                             encoding='utf-8').read()):
                     Log.info(self, "Setting up Nginx debug connection"
                              " for "+ip_addr)
-                    WOShellExec.cmd_exec(self, "sed -i \"/events {{/a\\ \\ \\ "
-                                               "\\ $(echo debug_connection "
-                                               "{ip}\;)\" /etc/nginx/"
-                                               "nginx.conf".format(ip=ip_addr))
+                    cmd = rf'sed -i "/events {{/a\    debug_connection {ip_addr};" /etc/nginx/nginx.conf'
+                    WOShellExec.cmd_exec(self, cmd)
                     self.trigger_nginx = True
 
             if not self.trigger_nginx:
@@ -683,17 +681,9 @@ class WODebugController(CementBaseController):
                     if not cron_time == 0:
                         Log.info(self, "updating crontab entry,"
                                  " please wait...")
-                        if not WOShellExec.cmd_exec(self, "/bin/bash -c "
-                                                    "\"crontab "
-                                                    "-l | sed '/WordOps "
-                                                    "start MySQL slow "
-                                                    "log/!b;n;c\*\/{0} "
-                                                    "\* \* \* "
-                                                    "\* \/usr"
-                                                    "\/local\/bin\/wo debug "
-                                                    "--import\-slow\-log' "
-                                                    "| crontab -\""
-                                                    .format(cron_time)):
+                        cron_cmd = rf"""crontab -l | sed '/WordOps start MySQL slow log/!b;n;c\*/{cron_time} * * * * /usr/local/bin/wo debug --import\-slow\-log' | crontab -"""
+                        cmd = f'/bin/bash -c "{cron_cmd}"'
+                        if not WOShellExec.cmd_exec(self, cmd):
                             Log.error(self, "failed to update crontab entry")
                     else:
                         Log.info(self, "removing crontab entry,"

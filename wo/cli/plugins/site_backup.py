@@ -5,7 +5,10 @@ from datetime import datetime
 
 from cement.core.controller import CementBaseController, expose
 
-from wo.cli.plugins.site_functions import SiteError, check_domain_exists
+from wo.cli.plugins.site_functions import (
+    SiteError, check_domain_exists, create_database_backup,
+    collect_site_metadata, create_site_archive
+)
 from wo.cli.plugins.sitedb import getSiteInfo, getAllsites
 from wo.core.domainvalidate import WODomain
 from wo.core.logging import Log
@@ -37,91 +40,88 @@ class WOSiteBackupController(CementBaseController):
         ]
 
     def _backup_site(self, site, backup_root=None, backup_db=True, backup_files=True):
+        """Backup a single site with improved error handling."""
+        # Get site information
         siteinfo = getSiteInfo(self, site)
         if not siteinfo:
-            Log.error(self, f"Site {site} does not exist")
+            raise SiteError(f"Site {site} does not exist")
 
+        # Setup backup directories
         timestamp = _timestamp()
         root = backup_root if backup_root else os.path.join(siteinfo.site_path, 'backup')
         domain_dir = os.path.join(root, site)
         target_dir = os.path.join(domain_dir, timestamp)
         WOFileUtils.mkdir(self, target_dir)
 
+        backup_success = True
+
+        # Backup files if requested
         if backup_files:
-            src = os.path.join(siteinfo.site_path, 'htdocs')
-            if os.path.isdir(src):
-                WOFileUtils.copyfiles(self, src, os.path.join(target_dir, 'htdocs'))
+            if not self._backup_site_files(siteinfo, target_dir):
+                backup_success = False
 
-        config_file = None
-        configs = glob.glob(os.path.join(siteinfo.site_path, '*-config.php'))
-        if configs:
-            config_file = configs[0]
-        else:
-            wp_cfg = os.path.join(siteinfo.site_path, 'htdocs', 'wp-config.php')
-            if os.path.isfile(wp_cfg):
-                config_file = wp_cfg
-        if config_file:
-            WOFileUtils.copyfile(self, config_file, os.path.join(target_dir, os.path.basename(config_file)))
+        # Backup database if requested
+        if backup_db:
+            if not create_database_backup(self, siteinfo, target_dir, site):
+                backup_success = False
 
-        if backup_db and siteinfo.db_name:
-            dump_file = os.path.join(target_dir, f'{site}.sql')
-            try:
-                cmd = (
-                    f"mysqldump --single-transaction --hex-blob {siteinfo.db_name} > {dump_file}"
-                )
-                if not WOShellExec.cmd_exec(self, cmd):
-                    raise SiteError('mysqldump failed')
-            except (CommandExecutionError, SiteError) as e:
-                Log.debug(self, str(e))
-                Log.warn(self, 'Failed to backup database')
-
-        metadata = {
-            'id': siteinfo.id,
-            'sitename': siteinfo.sitename,
-            'site_type': siteinfo.site_type,
-            'cache_type': siteinfo.cache_type,
-            'site_path': siteinfo.site_path,
-            'created_on': siteinfo.created_on.isoformat() if siteinfo.created_on else None,
-            'is_enabled': siteinfo.is_enabled,
-            'is_ssl': siteinfo.is_ssl,
-            'storage_fs': siteinfo.storage_fs,
-            'storage_db': siteinfo.storage_db,
-            'db_name': siteinfo.db_name,
-            'db_user': siteinfo.db_user,
-            'db_password': siteinfo.db_password,
-            'db_host': siteinfo.db_host,
-            'is_hhvm': siteinfo.is_hhvm,
-            'php_version': siteinfo.php_version,
-        }
-
-        slug = site.replace('.', '-').lower()
-        cred_file = f'/etc/nginx/acl/{slug}/credentials'
-        if os.path.isfile(cred_file):
-            try:
-                with open(cred_file) as cf:
-                    cred_line = cf.readline().strip()
-                if ':' in cred_line:
-                    user, passwd = cred_line.split(':', 1)
-                    metadata['httpauth_user'] = user
-                    metadata['httpauth_pass'] = passwd
-            except OSError as e:
-                Log.debug(self, str(e))
-
-        with open(os.path.join(target_dir, 'vhost.json'), 'w') as f:
-            json.dump(metadata, f, default=str, indent=2)
-
-        archive = os.path.join(domain_dir, f'{timestamp}.tar.zst')
+        # Collect and save metadata
+        metadata = collect_site_metadata(self, siteinfo, site)
         try:
-            if WOShellExec.cmd_exec(
-                self,
-                f"tar --zstd -cf {archive} -C {domain_dir} {timestamp}",
-            ):
-                WOFileUtils.remove(self, [target_dir])
-            else:
-                Log.warn(self, 'Failed to create archive')
-        except CommandExecutionError as e:
-            Log.debug(self, str(e))
-            Log.warn(self, 'Failed to create archive')
+            with open(os.path.join(target_dir, 'vhost.json'), 'w') as f:
+                json.dump(metadata, f, default=str, indent=2)
+        except OSError as e:
+            Log.warn(self, f'Failed to save metadata: {str(e)}')
+            backup_success = False
+
+        # Create archive
+        if backup_success:
+            if not create_site_archive(self, domain_dir, timestamp):
+                backup_success = False
+
+        if backup_success:
+            Log.info(self, f"Backup completed successfully for {site}")
+        else:
+            Log.warn(self, f"Backup completed with some errors for {site}")
+
+        return backup_success
+
+    def _backup_site_files(self, siteinfo, target_dir):
+        """Backup site files (htdocs and config)."""
+        # Backup htdocs directory
+        src = os.path.join(siteinfo.site_path, 'htdocs')
+        if os.path.isdir(src):
+            try:
+                WOFileUtils.copyfiles(self, src, os.path.join(target_dir, 'htdocs'))
+            except Exception as e:
+                Log.warn(self, f'Failed to backup htdocs: {str(e)}')
+                return False
+
+        # Backup configuration files
+        config_file = self._find_config_file(siteinfo.site_path)
+        if config_file:
+            try:
+                WOFileUtils.copyfile(self, config_file,
+                                    os.path.join(target_dir, os.path.basename(config_file)))
+            except Exception as e:
+                Log.warn(self, f'Failed to backup config file: {str(e)}')
+                return False
+
+        return True
+
+    def _find_config_file(self, site_path):
+        """Find the configuration file for a site."""
+        # Look for *-config.php files first
+        configs = glob.glob(os.path.join(site_path, '*-config.php'))
+        if configs:
+            return configs[0]
+
+        # Look for wp-config.php in htdocs
+        wp_cfg = os.path.join(site_path, 'htdocs', 'wp-config.php')
+        if os.path.isfile(wp_cfg):
+            return wp_cfg
+
+        return None
 
     @expose(hide=True)
     def default(self):
@@ -139,17 +139,26 @@ class WOSiteBackupController(CementBaseController):
                 Log.error(self, '`--all` option cannot be used with site name provided')
             sites = getAllsites(self)
             if not sites:
+                Log.info(self, "No sites found to backup")
                 return
+
+            success_count = 0
             for site in sites:
                 try:
-                    self._backup_site(
+                    if self._backup_site(
                         site.sitename,
                         backup_root=pargs.path,
                         backup_db=backup_db,
                         backup_files=backup_files,
-                    )
+                    ):
+                        success_count += 1
+                except SiteError as e:
+                    Log.error(self, f"Site {site.sitename}: {str(e)}")
                 except Exception as e:
-                    Log.debug(self, str(e))
+                    Log.error(self, f"Unexpected error backing up {site.sitename}: {str(e)}")
+                    Log.debug(self, f"Backup error details: {str(e)}")
+
+            Log.info(self, f"Backup completed for {success_count}/{len(sites)} sites")
             return
 
         if not pargs.site_name:
@@ -166,11 +175,16 @@ class WOSiteBackupController(CementBaseController):
             Log.error(self, f"site {wo_domain} does not exist")
 
         try:
-            self._backup_site(
+            success = self._backup_site(
                 wo_domain,
                 backup_root=pargs.path,
                 backup_db=backup_db,
                 backup_files=backup_files,
             )
+            if not success:
+                Log.error(self, f"Backup failed for {wo_domain}")
+        except SiteError as e:
+            Log.error(self, str(e))
         except Exception as e:
-            Log.debug(self, str(e))
+            Log.error(self, f"Unexpected error during backup: {str(e)}")
+            Log.debug(self, f"Backup error details: {str(e)}")
