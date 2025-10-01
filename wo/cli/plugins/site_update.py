@@ -11,7 +11,8 @@ from wo.cli.plugins.site_functions import (
     display_cache_settings, copyWildcardCert,
     updatewpuserpassword, setupngxblocker, setupwp_plugin,
     setupwordpressnetwork, installwp_plugin, sitebackup,
-    uninstallwp_plugin, cleanup_php_fpm)
+    uninstallwp_plugin, cleanup_php_fpm, PHPVersionManager,
+    safe_site_backup_for_update, rollback_site_from_backup)
 from wo.cli.plugins.sitedb import (getAllsites,
                                    getSiteInfo, updateSiteInfo)
 from wo.core.acme import WOAcme
@@ -268,21 +269,18 @@ class WOSiteUpdateController(CementBaseController):
                     Log.error(self, "Certificate doesn't exist")
                 return 0
 
-        if (((stype == 'php' and
-              oldsitetype not in ['html', 'proxy', 'php', 'php74', 'php80',
-                                  'php81', 'php82', 'php83', 'php84']) or
-             (stype == 'mysql' and oldsitetype not in [
-                 'html', 'php', 'php74', 'php80', 'php81',
-                 'php82', 'php83', 'php84', 'proxy']) or
-             (stype == 'wp' and oldsitetype not in [
-                 'html', 'php', 'php74', 'php80', 'php81',
-                 'php82', 'php83', 'php84', 'mysql', 'proxy', 'wp']) or
+        # Use centralized PHP version management instead of hardcoded lists
+        php_types = ['html', 'proxy', 'php'] + PHPVersionManager.SUPPORTED_VERSIONS
+        mysql_types = ['html', 'php', 'proxy'] + PHPVersionManager.SUPPORTED_VERSIONS
+        wp_types = ['html', 'php', 'mysql', 'proxy', 'wp'] + PHPVersionManager.SUPPORTED_VERSIONS
+
+        if (((stype == 'php' and oldsitetype not in php_types) or
+             (stype == 'mysql' and oldsitetype not in mysql_types) or
+             (stype == 'wp' and oldsitetype not in wp_types) or
              (stype == 'wpsubdir' and oldsitetype in ['wpsubdomain']) or
              (stype == 'wpsubdomain' and oldsitetype in ['wpsubdir']) or
              (stype == oldsitetype and cache == oldcachetype)) and
-                not (pargs.php74 or pargs.php80 or
-                     pargs.php81 or pargs.php82 or
-                     pargs.php83 or pargs.php84 or pargs.alias)):
+                not (PHPVersionManager.has_any_php_version(pargs) or pargs.alias)):
             Log.info(self, Log.FAIL + "can not update {0} {1} to {2} {3}".
                      format(oldsitetype, oldcachetype, stype, cache))
             return 1
@@ -339,10 +337,13 @@ class WOSiteUpdateController(CementBaseController):
             data = dict(
                 site_name=wo_domain, www_domain=wo_www_domain,
                 static=False, basic=True, wp=False, wpfc=False,
-                php74=False, php80=False, php81=False, php82=False, php83=False,
-                php84=False, wpsc=False, wpredis=False, wprocket=False, wpce=False,
+                wpsc=False, wpredis=False, wprocket=False, wpce=False,
                 multisite=False, wpsubdir=False, webroot=wo_site_webroot,
                 currsitetype=oldsitetype, currcachetype=oldcachetype)
+
+            # Add PHP version flags dynamically instead of hardcoding
+            for php_ver in PHPVersionManager.SUPPORTED_VERSIONS:
+                data[php_ver] = False
 
         elif stype in ['mysql', 'wp', 'wpsubdir', 'wpsubdomain']:
             data = dict(
@@ -363,12 +364,9 @@ class WOSiteUpdateController(CementBaseController):
                 if stype == 'wpsubdir':
                     data['wpsubdir'] = True
 
-        if ((pargs.php74 or pargs.php80 or pargs.php81 or
-             pargs.php82 or pargs.php83 or pargs.php84) and
-                (not data)):
-            Log.debug(
-                self, "pargs php74, "
-                "or php80, or php81 or php82 or php83 or php84 enabled")
+        if PHPVersionManager.has_any_php_version(pargs) and (not data):
+            selected_php = PHPVersionManager.get_selected_versions(pargs)
+            Log.debug(self, f"PHP version enabled: {', '.join(selected_php)}")
             data = dict(
                 site_name=wo_domain,
                 www_domain=wo_www_domain,
@@ -564,21 +562,28 @@ class WOSiteUpdateController(CementBaseController):
                 Log.debug(self, str(e))
                 Log.error(self, "NGINX configuration check failed.")
 
+            # Create safe backup (copy, not move) to preserve original files
+            backup_path = None
             try:
-                # Move webroot/config into the backup directory so the update
-                # process can recreate a clean site structure.
-                sitebackup(self, data, move_files=True, db_only=False, files_only=False)
+                backup_path = safe_site_backup_for_update(self, data)
             except Exception as e:
                 Log.debug(self, str(e))
+                Log.error(self, "Failed to create backup before update. Aborting for safety.")
+                return 1
 
             # setup NGINX configuration, and webroot
             try:
                 setupdomain(self, data)
             except SiteError as e:
                 Log.debug(self, str(e))
-                Log.info(self, Log.FAIL + "Update site failed."
-                         "Check the log for details:"
-                         "`tail /var/log/wo/wordops.log` and please try again")
+                Log.info(self, Log.FAIL + "Update site failed. Attempting rollback...")
+
+                # Attempt to rollback from backup
+                if backup_path:
+                    rollback_site_from_backup(self, data, backup_path)
+                    Log.info(self, "Site restored from backup due to update failure.")
+
+                Log.info(self, "Check the log for details: `tail /var/log/wo/wordops.log`")
                 return 1
 
         if 'proxy' in data.keys() and data['proxy']:

@@ -49,8 +49,9 @@ def pre_pref(self, apt_packages):
             WORepo.add(self, repo_url=wo_mysql_repo_conf, repo_name="mariadb")
     if ("mariadb-server" in apt_packages and
             not os.path.exists('/etc/mysql/conf.d/my.cnf')):
-        # generate random 24 characters root password
-        chars = ''.join(random.sample(string.ascii_letters, 24))
+        # generate random 24 characters root password using unified function
+        from wo.cli.plugins.site_functions import generate_random
+        chars = generate_random(24, string.ascii_letters)
         # generate my.cnf root credentials
         mysql_config = """
             [client]
