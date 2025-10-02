@@ -66,11 +66,32 @@ def log_failure(controller, message="Failed"):
 
 def build_wp_command(action, *args, **kwargs):
     base_cmd = f"{WOVar.wo_wpcli_path} --allow-root {action}"
-    if args:
-        base_cmd += " " + " ".join(shlex.quote(str(arg)) for arg in args)
+
+    arg_tokens = []
+    for arg in args:
+        if arg is None:
+            continue
+        arg_text = str(arg)
+        if not arg_text:
+            continue
+        arg_tokens.append(shlex.quote(arg_text))
+
+    if arg_tokens:
+        base_cmd += " " + " ".join(arg_tokens)
+
     if kwargs:
-        options = " ".join(f"--{k}={shlex.quote(str(v))}" for k, v in kwargs.items())
-        base_cmd += " " + options
+        options = []
+        for key, value in kwargs.items():
+            if isinstance(value, bool):
+                if value:
+                    options.append(f"--{key}")
+            elif value is None:
+                options.append(f"--{key}")
+            else:
+                options.append(f"--{key}={shlex.quote(str(value))}")
+        if options:
+            base_cmd += " " + " ".join(options)
+
     return base_cmd
 
 def validate_input_regex(value, pattern, error_message):
@@ -730,6 +751,102 @@ def _setup_cache_plugins(controller, data):
         WOShellExec.cmd_exec(controller, cmd)
 
 
+def _normalise_template_source(entry, entry_type, index):
+    source = entry.get('slug') or entry.get('url')
+    if not source:
+        raise SiteError(
+            f"WordPress template {entry_type} entry at index {index} must define a 'slug' or 'url'.")
+    label = entry.get('slug') or entry.get('url')
+    return source, label
+
+
+def _extract_bool(entry, key, *, default=None, section="WordPress template"):
+    if key not in entry:
+        return default
+    value = entry[key]
+    if isinstance(value, bool):
+        return value
+    raise SiteError(f"{section} field '{key}' must be a boolean value.")
+
+
+def _validate_template_map(value, section_name):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SiteError(f"WordPress template '{section_name}' must be a JSON object.")
+    return value
+
+
+def load_wp_template(controller, template_path):
+    """Load and validate a WordPress provisioning template from JSON."""
+    resolved_path = os.path.abspath(os.path.expanduser(template_path))
+
+    if not os.path.isfile(resolved_path):
+        raise SiteError(f"WordPress template file '{resolved_path}' does not exist.")
+
+    try:
+        with open(resolved_path, 'r', encoding='utf-8') as handler:
+            payload = json.load(handler)
+    except (OSError, ValueError) as e:
+        Log.debug(controller, str(e))
+        raise SiteError("Unable to load WordPress template JSON file.")
+
+    if not isinstance(payload, dict):
+        raise SiteError("WordPress template must be a JSON object at the top level.")
+
+    template = {
+        'themes': [],
+        'plugins': [],
+        'options': _validate_template_map(payload.get('options'), 'options'),
+        'constants': _validate_template_map(payload.get('constants'), 'constants')
+    }
+
+    themes = payload.get('themes', [])
+    if themes:
+        if not isinstance(themes, list):
+            raise SiteError("WordPress template 'themes' must be an array.")
+        for index, entry in enumerate(themes):
+            if not isinstance(entry, dict):
+                raise SiteError(
+                    f"WordPress template theme entry at index {index} must be a JSON object.")
+            source, label = _normalise_template_source(entry, 'theme', index)
+            theme_data = {
+                'source': source,
+                'label': label,
+                'activate': _extract_bool(entry, 'activate', default=False,
+                                          section="WordPress template theme"),
+                'network': _extract_bool(entry, 'network', default=None,
+                                         section="WordPress template theme")
+            }
+            template['themes'].append(theme_data)
+
+    plugins = payload.get('plugins', [])
+    if plugins:
+        if not isinstance(plugins, list):
+            raise SiteError("WordPress template 'plugins' must be an array.")
+        for index, entry in enumerate(plugins):
+            if not isinstance(entry, dict):
+                raise SiteError(
+                    f"WordPress template plugin entry at index {index} must be a JSON object.")
+            source, label = _normalise_template_source(entry, 'plugin', index)
+            plugin_options = entry.get('options', {})
+            if 'options' in entry and not isinstance(plugin_options, dict):
+                raise SiteError(
+                    f"WordPress template plugin 'options' at index {index} must be a JSON object.")
+            plugin_data = {
+                'source': source,
+                'label': label,
+                'activate': _extract_bool(entry, 'activate', default=False,
+                                          section="WordPress template plugin"),
+                'network': _extract_bool(entry, 'network', default=None,
+                                         section="WordPress template plugin"),
+                'options': plugin_options or {}
+            }
+            template['plugins'].append(plugin_data)
+
+    return template
+
+
 def _generate_database_username(domain_processed, max_length=12):
     """
     Generate a unique database username based on processed domain.
@@ -982,6 +1099,8 @@ def setupwordpress(self, data, vhostonly=False):
     # Setup cache plugins
     _setup_cache_plugins(self, data)
 
+    apply_wp_template(self, data)
+
     return dict(wp_user=wo_wp_user, wp_pass=wo_wp_pass, wp_email=wo_wp_email)
 
 
@@ -1008,14 +1127,11 @@ def setupwordpressnetwork(self, data):
     Log.info(self, "[" + Log.ENDC + "Done" + Log.OKBLUE + "]")
 
 
-def _execute_wp_plugin_command(controller, webroot, action, plugin_name, extra_args=""):
+def _execute_wp_plugin_command(controller, webroot, action, plugin_name, **options):
     """Execute WordPress plugin command with standardized error handling"""
     WOFileUtils.chdir(controller, f'{webroot}/htdocs/')
 
-    if action == "activate" and extra_args:
-        cmd = build_wp_command("plugin", action, plugin_name, extra_args)
-    else:
-        cmd = build_wp_command("plugin", action, plugin_name)
+    cmd = build_wp_command(f"plugin {action}", plugin_name, **options)
 
     execute_command_safely(controller, cmd, f"plugin {action} failed")
 
@@ -1038,7 +1154,58 @@ def _log_plugin_operation(controller, action, plugin_name, success=True):
             Log.failed(controller, f"Setting plugin {plugin_name}")
 
 
-def installwp_plugin(self, plugin_name, data):
+def _execute_wp_theme_command(controller, webroot, action, theme_name, **options):
+    """Execute WordPress theme command with standardized error handling"""
+    WOFileUtils.chdir(controller, f'{webroot}/htdocs/')
+
+    cmd = build_wp_command(f"theme {action}", theme_name, **options)
+    execute_command_safely(controller, cmd, f"theme {action} failed")
+
+
+def _log_theme_operation(controller, action, theme_name, success=True):
+    """Standardized logging for theme operations"""
+    message = f"{action.capitalize()} theme {theme_name}"
+    if success:
+        Log.valide(controller, message)
+    else:
+        Log.failed(controller, message)
+
+
+def _serialise_wp_option_value(value):
+    """Serialise option values for WP-CLI commands."""
+    if value is None:
+        return ''
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return '1' if value else '0'
+    return str(value)
+
+
+def installwp_theme(self, theme_name, data, activate=False, network=None):
+    """Install and optionally activate a WordPress theme."""
+    webroot = data['webroot']
+    Log.wait(self, f"Installing theme {theme_name}")
+
+    try:
+        _execute_wp_theme_command(self, webroot, "install", theme_name)
+
+        if data.get('multisite'):
+            enable_kwargs = {}
+            if network is True:
+                enable_kwargs['network'] = True
+            _execute_wp_theme_command(self, webroot, "enable", theme_name, **enable_kwargs)
+
+        if activate:
+            _execute_wp_theme_command(self, webroot, "activate", theme_name)
+
+        _log_theme_operation(self, "install", theme_name, success=True)
+    except SiteError as e:
+        _log_theme_operation(self, "install", theme_name, success=False)
+        raise e
+
+
+def installwp_plugin(self, plugin_name, data, activate=True, network=None):
     """
     Install and activate WordPress plugin - refactored for better maintainability.
 
@@ -1054,8 +1221,12 @@ def installwp_plugin(self, plugin_name, data):
         _execute_wp_plugin_command(self, webroot, "install", plugin_name)
 
         # Activate plugin (with network flag for multisite)
-        extra_args = "--network" if data.get('multisite') else ""
-        _execute_wp_plugin_command(self, webroot, "activate", plugin_name, extra_args)
+        if activate:
+            activation_kwargs = {}
+            network_flag = data.get('multisite') if network is None else network
+            if network_flag:
+                activation_kwargs['network'] = True
+            _execute_wp_plugin_command(self, webroot, "activate", plugin_name, **activation_kwargs)
 
         _log_plugin_operation(self, "install", plugin_name, success=True)
         return 1
@@ -1106,10 +1277,10 @@ def setupwp_plugin(self, plugin_name, plugin_option, plugin_data, data):
     try:
         if data.get('multisite'):
             # Multisite: use network meta update
-            cmd = build_wp_command("network meta update", "1", plugin_option, f"'{plugin_data}'", format="json")
+            cmd = build_wp_command("network meta update", "1", plugin_option, plugin_data)
         else:
             # Single site: use option update
-            cmd = build_wp_command("option update", plugin_option, f"'{plugin_data}'", format="json")
+            cmd = build_wp_command("option update", plugin_option, plugin_data)
 
         execute_command_safely(self, cmd, "plugin setup failed")
         _log_plugin_operation(self, "setup", plugin_name, success=True)
@@ -1117,6 +1288,68 @@ def setupwp_plugin(self, plugin_name, plugin_option, plugin_data, data):
     except SiteError as e:
         _log_plugin_operation(self, "setup", plugin_name, success=False)
         raise e
+
+
+def update_wp_options(self, options, data):
+    """Update WordPress options using WP-CLI."""
+    if not options:
+        return
+
+    webroot = data['webroot']
+    WOFileUtils.chdir(self, f'{webroot}/htdocs/')
+
+    for option_name, option_value in options.items():
+        Log.wait(self, f"Updating WordPress option {option_name}")
+        option_payload = _serialise_wp_option_value(option_value)
+        cmd = build_wp_command("option update", option_name, option_payload)
+        execute_command_safely(self, cmd, f"updating option {option_name} failed")
+        Log.valide(self, f"Updating WordPress option {option_name}")
+
+
+def define_wp_constants(self, constants, data):
+    """Define constants in wp-config.php via WP-CLI."""
+    if not constants:
+        return
+
+    webroot = data['webroot']
+    WOFileUtils.chdir(self, f'{webroot}/htdocs/')
+
+    for constant_name, constant_value in constants.items():
+        Log.wait(self, f"Defining WordPress constant {constant_name}")
+        if isinstance(constant_value, bool):
+            value = 'true' if constant_value else 'false'
+            cmd = build_wp_command("config set", constant_name, value, raw=True)
+        elif isinstance(constant_value, (int, float)):
+            cmd = build_wp_command("config set", constant_name, constant_value, raw=True)
+        else:
+            cmd = build_wp_command("config set", constant_name, str(constant_value))
+        execute_command_safely(self, cmd, f"defining constant {constant_name} failed")
+        Log.valide(self, f"Defining WordPress constant {constant_name}")
+
+
+def apply_wp_template(self, data):
+    """Apply the loaded WordPress template after core installation."""
+    template = data.get('wp_template')
+    if not template:
+        return
+
+    themes = template.get('themes', [])
+    for theme in themes:
+        installwp_theme(self, theme['source'], data,
+                        activate=theme.get('activate', False),
+                        network=theme.get('network'))
+
+    plugins = template.get('plugins', [])
+    for plugin in plugins:
+        installwp_plugin(self, plugin['source'], data,
+                         activate=plugin.get('activate', False),
+                         network=plugin.get('network'))
+        for option_name, option_value in plugin.get('options', {}).items():
+            plugin_payload = _serialise_wp_option_value(option_value)
+            setupwp_plugin(self, plugin['label'], option_name, plugin_payload, data)
+
+    update_wp_options(self, template.get('options'), data)
+    define_wp_constants(self, template.get('constants'), data)
 
 
 def parse_wp_db_config(config_path):
