@@ -91,6 +91,7 @@ wo site create example.com --wpredis           # install wordpress + nginx redis
 wo site create example.com --wprocket          # install wordpress with WP-Rocket plugin
 wo site create example.com --wpce              # install wordpress with Cache-enabler plugin
 wo site create example.com --wpsc              # install wordpress with wp-super-cache plugin
+wo site create example.com --wp --template docs/examples/wp-template.json  # install wordpress and apply the provisioning template
 ```
 
 ### WordPress multisite with subdirectory
@@ -102,6 +103,7 @@ wo site create example.com --wpsubdir --wpfc     # install wpmu-subdirectory + n
 wo site create example.com --wpsubdir --wpredis  # install wpmu-subdirectory + nginx redis_cache
 wo site create example.com --wpsubdir --wprocket # install wpmu-subdirectory + WP-Rocket plugin
 wo site create example.com --wpsubdir --wpce     # install wpmu-subdirectory + Cache-Enabler plugin
+wo site create example.com --wpsubdir --template docs/examples/wp-template.json  # install wpmu-subdirectory site using the provisioning template
 ```
 
 ### WordPress multisite with subdomain
@@ -113,6 +115,7 @@ wo site create example.com --wpsubdomain --wpfc     # install wpmu-subdomain + n
 wo site create example.com --wpsubdomain --wpredis  # install wpmu-subdomain + nginx redis_cache
 wo site create example.com --wpsubdomain --wprocket # install wpmu-subdomain + WP-Rocket plugin
 wo site create example.com --wpsubdomain --wpce     # install wpmu-subdomain + Cache-Enabler plugin
+wo site create example.com --wpsubdomain --template docs/examples/wp-template.json  # install wpmu-subdomain site using the provisioning template
 ```
 
 ### Non-WordPress sites

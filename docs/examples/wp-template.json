@@ -1,0 +1,45 @@
+{
+  "themes": [
+    {
+      "slug": "astra",
+      "activate": true
+    }
+  ],
+  "plugins": [
+    {
+      "slug": "nginx-helper",
+      "activate": true,
+      "network": true,
+      "options": {
+        "rt_wp_nginx_helper_options": {
+          "enable_purge": 1,
+          "cache_method": "enable_redis",
+          "redis_hostname": "127.0.0.1",
+          "redis_port": "6379",
+          "redis_prefix": "nginx-cache:"
+        }
+      }
+    },
+    {
+      "slug": "cache-enabler",
+      "activate": true,
+      "options": {
+        "cache-enabler": {
+          "cache_expires": 24,
+          "compress_cache": 1,
+          "minify_html": 1,
+          "minify_inline_css_js": 1
+        }
+      }
+    }
+  ],
+  "options": {
+    "blogname": "Example Inc.",
+    "timezone_string": "America/New_York"
+  },
+  "constants": {
+    "WP_CACHE": true,
+    "WP_MEMORY_LIMIT": "256M",
+    "WP_MAX_MEMORY_LIMIT": "512M"
+  }
+}

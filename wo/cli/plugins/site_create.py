@@ -7,7 +7,8 @@ from wo.cli.plugins.site_functions import (
     doCleanupAction, setupdatabase, setupwordpress, setwebrootpermissions,
     setup_php_fpm, setup_letsencrypt_advanced,
     determine_site_type, handle_site_error_cleanup,
-    display_cache_settings, copyWildcardCert, PHPVersionManager)
+    display_cache_settings, copyWildcardCert, PHPVersionManager,
+    load_wp_template)
 from wo.cli.plugins.sitedb import (addNewSite, deleteSiteInfo,
                                    updateSiteInfo, getSiteInfo)
 from wo.core.acme import WOAcme
@@ -105,6 +106,9 @@ class WOSiteCreateController(CementBaseController):
             (['--vhostonly'], dict(help="only create vhost and database "
                                    "without installing WordPress",
                                    action='store_true')),
+            (['--template'],
+                dict(help="path to WordPress provisioning template",
+                     dest='template', metavar='FILE')),
             (['--secure'],
                 dict(help="enable HTTP basic authentication", action='store_true')),
         ]
@@ -292,6 +296,15 @@ class WOSiteCreateController(CementBaseController):
             data['wpredis'] = True
             data['basic'] = False
             pargs.wpredis = True
+
+        if pargs.template:
+            if not data.get('wp') or data.get('subsite'):
+                Log.error(self, "--template is only available for WordPress site installations")
+            try:
+                data['wp_template'] = load_wp_template(self, pargs.template)
+            except SiteError as e:
+                Log.debug(self, str(e))
+                Log.error(self, str(e))
 
         # Define php-fpm variables for templates
         data['pool_name'] = wo_domain.replace('.', '-').lower()
