@@ -1,0 +1,57 @@
+# Restrict to explicit IPs if possible instead of 0.0.0.0
+Port {{sshport}}
+ListenAddress 0.0.0.0
+# ListenAddress ::           # uncomment only if you actually need IPv6
+
+# Host keys
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+
+# Key exchange / Ciphers / MACs
+# Modern, OpenSSH 9.x-safe sets; aligns with strong-by-default posture.
+KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# Authentication
+AuthenticationMethods {{authentication_methods}}
+PubkeyAuthentication yes
+PasswordAuthentication {{password_auth}}
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+
+# Root and forwarding controls
+PermitRootLogin no
+AllowAgentForwarding no
+AllowTcpForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+
+# Optional allowlists
+AllowUsers {{allow_users}}
+# AllowGroups sshusers
+
+# Login controls
+LoginGraceTime 10
+TCPKeepAlive no
+ClientAliveInterval 600
+ClientAliveCountMax 3
+MaxAuthTries 3
+MaxSessions 10
+MaxStartups 10:30:60   # cap unauth'd connection bursts
+
+# Environment/locale
+AcceptEnv LANG LC_*
+
+# Logging & strict file mode checks
+LogLevel VERBOSE
+SyslogFacility AUTH
+StrictModes yes
+
+# Protocol hygiene
+# IgnoreRhosts yes        # implicit default on modern OpenSSH
+# HostbasedAuthentication no  # default; leave explicit if you use hostbased
+UseDNS no
