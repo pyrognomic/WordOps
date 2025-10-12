@@ -1,6 +1,7 @@
 import json
 import os
 import glob
+import shutil
 from datetime import datetime
 
 from cement.core.controller import CementBaseController, expose
@@ -37,9 +38,15 @@ class WOSiteBackupController(CementBaseController):
              dict(help='directory to store backups')),
             (['--all'],
              dict(help='backup all sites', action='store_true')),
+            (['--remote'],
+             dict(help='upload archive to an rclone destination (e.g. remote:path)', dest='remote')),
+            (['--remote-retain'],
+             dict(help='retain only the most recent N archives on the rclone destination',
+                  type=int, dest='remote_retain')),
         ]
 
-    def _backup_site(self, site, backup_root=None, backup_db=True, backup_files=True):
+    def _backup_site(self, site, backup_root=None, backup_db=True, backup_files=True,
+                     remote_destination=None, remote_retain=None):
         """Backup a single site with improved error handling."""
         # Get site information
         siteinfo = getSiteInfo(self, site)
@@ -74,10 +81,17 @@ class WOSiteBackupController(CementBaseController):
             Log.warn(self, f'Failed to save metadata: {str(e)}')
             backup_success = False
 
+        archive_path = os.path.join(domain_dir, f'{timestamp}.tar.zst')
+
         # Create archive
         if backup_success:
             if not create_site_archive(self, domain_dir, timestamp):
                 backup_success = False
+            elif remote_destination:
+                if not self._upload_with_rclone(archive_path, remote_destination):
+                    backup_success = False
+                elif remote_retain and remote_retain > 0:
+                    self._prune_remote_backups(remote_destination, remote_retain)
 
         if backup_success:
             Log.info(self, f"Backup completed successfully for {site}")
@@ -123,9 +137,105 @@ class WOSiteBackupController(CementBaseController):
 
         return None
 
+    def _normalize_remote_dir(self, remote_destination):
+        if not remote_destination:
+            return None
+        remote_dir = remote_destination.strip().rstrip('/')
+        return remote_dir
+
+    def _build_remote_file_path(self, remote_dir, filename):
+        if remote_dir.endswith(':'):
+            return f'{remote_dir}{filename}'
+        return f'{remote_dir}/{filename}'
+
+    def _upload_with_rclone(self, archive_path, remote_destination):
+        remote_dir = self._normalize_remote_dir(remote_destination)
+        if not remote_dir:
+            Log.warn(self, 'No remote destination provided for rclone upload')
+            return False
+
+        archive_name = os.path.basename(archive_path)
+        remote_file = self._build_remote_file_path(remote_dir, archive_name)
+
+        try:
+            if not WOShellExec.cmd_exec(self, ['rclone', 'mkdir', remote_dir]):
+                Log.warn(self, f'Failed to ensure remote directory exists: {remote_dir}')
+                return False
+        except CommandExecutionError:
+            Log.warn(self, f'Failed to ensure remote directory exists: {remote_dir}')
+            return False
+
+        try:
+            if WOShellExec.cmd_exec(
+                self,
+                ['rclone', 'copyto', archive_path, remote_file],
+                errormsg='Failed to upload backup archive with rclone',
+            ):
+                Log.info(self, f'Uploaded backup to {remote_file}')
+                return True
+            Log.warn(self, 'Failed to upload backup archive with rclone')
+            return False
+        except CommandExecutionError:
+            Log.warn(self, 'Failed to upload backup archive with rclone')
+            return False
+
+    def _prune_remote_backups(self, remote_destination, retain):
+        if retain < 1:
+            return
+
+        remote_dir = self._normalize_remote_dir(remote_destination)
+        if not remote_dir:
+            return
+
+        try:
+            output = WOShellExec.cmd_exec_stdout(
+                self,
+                ['rclone', 'lsjson', remote_dir],
+                errormsg=f'Unable to list remote backups at {remote_dir}',
+            )
+        except CommandExecutionError:
+            Log.warn(self, f'Unable to list remote backups at {remote_dir}')
+            return
+
+        try:
+            entries = json.loads(output) if output else []
+        except json.JSONDecodeError:
+            Log.warn(self, f'Unable to parse remote backup listing from {remote_dir}')
+            return
+
+        files = [entry for entry in entries if not entry.get('IsDir') and entry.get('Name')]
+        if len(files) <= retain:
+            return
+
+        files.sort(key=lambda item: item.get('Name'))
+        to_delete = files[:-retain]
+        for entry in to_delete:
+            remote_file = self._build_remote_file_path(remote_dir, entry['Name'])
+            if WOShellExec.cmd_exec(
+                self,
+                ['rclone', 'deletefile', remote_file],
+                errormsg=f'Failed to delete remote backup {remote_file}',
+            ):
+                Log.info(self, f'Removed remote backup {remote_file}')
+            else:
+                Log.warn(self, f'Failed to delete remote backup {remote_file}')
+                break
+
     @expose(hide=True)
     def default(self):
         pargs = self.app.pargs
+
+        if getattr(pargs, 'remote_retain', None) is not None and not getattr(pargs, 'remote', None):
+            Log.error(self, "--remote-retain requires --remote to be set")
+            return
+
+        if getattr(pargs, 'remote', None):
+            if shutil.which('rclone') is None:
+                Log.error(self, "rclone binary not found. Install rclone or remove the --remote option.")
+                return
+            if getattr(pargs, 'remote_retain', None) is not None and pargs.remote_retain < 1:
+                Log.error(self, "--remote-retain must be a positive integer")
+                return
 
         backup_db = True
         backup_files = True
@@ -150,6 +260,8 @@ class WOSiteBackupController(CementBaseController):
                         backup_root=pargs.path,
                         backup_db=backup_db,
                         backup_files=backup_files,
+                        remote_destination=pargs.remote,
+                        remote_retain=pargs.remote_retain,
                     ):
                         success_count += 1
                 except SiteError as e:
@@ -180,6 +292,8 @@ class WOSiteBackupController(CementBaseController):
                 backup_root=pargs.path,
                 backup_db=backup_db,
                 backup_files=backup_files,
+                remote_destination=pargs.remote,
+                remote_retain=pargs.remote_retain,
             )
             if not success:
                 Log.error(self, f"Backup failed for {wo_domain}")

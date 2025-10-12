@@ -1,0 +1,597 @@
+import json
+import os
+import shutil
+import subprocess
+import time
+import errno
+from datetime import datetime
+
+from cement.core.controller import CementBaseController, expose
+
+from wo.cli.plugins.sitedb import getAllsites, getSiteInfo
+from wo.cli.plugins.site_functions import (
+    SiteError,
+    create_database_backup,
+    collect_site_metadata,
+    create_site_archive,
+)
+from wo.core.fileutils import WOFileUtils
+from wo.core.logging import Log
+from wo.core.shellexec import WOShellExec
+from wo.core.template import WOTemplate
+
+
+def _now_ts():
+    return datetime.utcnow().strftime('%Y-%m-%d_%H-%M-%S')
+
+
+class WOSiteAutoUpdateController(CementBaseController):
+    class Meta:
+        label = 'autoupdate'
+        stacked_on = 'site'
+        stacked_type = 'nested'
+        description = 'Check and apply WordPress updates with automated backup and rollback'
+        arguments = [
+            (['site_name'], dict(help='domain to process', nargs='?')),
+            (['--all'], dict(help='process all WordPress sites', action='store_true')),
+            (['--dry-run'], dict(help='only check; do not change anything', action='store_true')),
+            (['--no-visual'], dict(help='skip visual regression step', action='store_true')),
+            (['--backup-dir'], dict(help='override backup root directory')),
+            # BackstopJS setup options
+            (['--urls'], dict(help='comma-separated URL paths for scenarios (e.g. /,/about,/contact)')),
+            (['--urls-file'], dict(help='file with one URL path per line')),
+            (['--reference'], dict(help='generate BackstopJS baseline immediately', action='store_true')),
+            (['--approve'], dict(help='promote last BackstopJS test to baseline (when used with backstop command)', action='store_true')),
+        ]
+
+    # ----- Public commands -----
+    @expose(help='Run autoupdate for the given site or for all WP sites')
+    def run(self):
+        pargs = self.app.pargs
+        # Acquire global run lock to prevent overlapping batches
+        global_lock = '/run/wo-autoupdate.lock'
+        if not self._acquire_lock(global_lock):
+            Log.warn(self, 'Another autoupdate run is in progress; skipping')
+            return
+        try:
+        targets = self._discover_targets(pargs)
+        if not targets:
+            Log.info(self, 'No sites to process')
+            return
+
+        summary = { 'started_at': _now_ts(), 'sites': [] }
+        ok_all = True
+
+        for sitename in targets:
+            # Per-site lock to avoid concurrent operations on the same site
+            site_lock = None
+            try:
+                siteinfo = getSiteInfo(self, sitename)
+                if not siteinfo:
+                    summary['sites'].append({'site': sitename, 'status': 'error', 'error': 'site not found'})
+                    ok_all = False
+                    continue
+
+                slug = siteinfo.sitename.replace('.', '-').lower()
+                site_lock = f'/run/wo-autoupdate-{slug}.lock'
+                if not self._acquire_lock(site_lock):
+                    Log.warn(self, f'Skipping {sitename}: another update in progress for this site')
+                    summary['sites'].append({'site': sitename, 'status': 'skip', 'reason': 'locked'})
+                    continue
+
+                res = self._process_site(
+                    siteinfo,
+                    dry_run=pargs.dry_run,
+                    skip_visual=pargs.no_visual,
+                    backup_root=pargs.backup_dir,
+                )
+                summary['sites'].append(res)
+                ok_all = ok_all and res.get('status') == 'ok'
+            except Exception as e:
+                Log.debug(self, f'Autoupdate error for {sitename}: {str(e)}')
+                summary['sites'].append({'site': sitename, 'status': 'error', 'error': str(e)})
+                ok_all = False
+            finally:
+                if site_lock:
+                    self._release_lock(site_lock)
+
+        summary['finished_at'] = _now_ts()
+        self._write_summary(summary)
+        if not ok_all:
+            Log.warn(self, 'One or more sites failed during autoupdate')
+        finally:
+            self._release_lock(global_lock)
+
+    @expose(help='Install or remove hourly systemd autoupdate timer')
+    def schedule(self):
+        pargs = self.app.pargs
+        # Simple arg parsing: wo site autoupdate schedule [--enable|--disable] [--interval hourly|daily]
+        enable = '--enable' in self.app.argv
+        disable = '--disable' in self.app.argv
+        interval = 'hourly'
+        for flag in ('hourly', 'daily'):
+            if f'--interval={flag}' in self.app.argv:
+                interval = flag
+                break
+
+        if enable and disable:
+            Log.error(self, 'Cannot use --enable and --disable together')
+
+        service_path = '/etc/systemd/system/wo-autoupdate.service'
+        timer_path = '/etc/systemd/system/wo-autoupdate.timer'
+
+        if enable:
+            data = {
+                'exec': '/usr/local/bin/wo site autoupdate run --all --no-visual',
+                'interval': 'OnCalendar=hourly' if interval == 'hourly' else 'OnCalendar=daily',
+            }
+            WOTemplate.deploy(self, service_path, 'autoupdate-service.mustache', data, overwrite=True)
+            WOTemplate.deploy(self, timer_path, 'autoupdate-timer.mustache', data, overwrite=True)
+            # Reload and enable timer
+            WOShellExec.cmd_exec(self, ['systemctl', 'daemon-reload'], errormsg='failed to reload systemd')
+            WOShellExec.cmd_exec(self, ['systemctl', 'enable', '--now', 'wo-autoupdate.timer'], errormsg='failed to enable timer')
+            Log.info(self, f'Installed autoupdate timer ({interval})')
+            return
+
+        if disable:
+            WOShellExec.cmd_exec(self, ['systemctl', 'disable', '--now', 'wo-autoupdate.timer'], errormsg='failed to disable timer')
+            for path in (service_path, timer_path):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            WOShellExec.cmd_exec(self, ['systemctl', 'daemon-reload'])
+            Log.info(self, 'Removed autoupdate timer')
+            return
+
+        Log.info(self, 'Usage: wo site autoupdate schedule --enable|--disable [--interval=hourly|daily]')
+
+    # ----- Internal helpers -----
+    def _discover_targets(self, pargs):
+        if pargs.all:
+            targets = []
+            for s in getAllsites(self) or []:
+                # Only WordPress site types
+                if s.site_type and 'wp' in s.site_type:
+                    targets.append(s.sitename)
+            return targets
+
+        if pargs.site_name:
+            return [pargs.site_name.strip()]
+
+        return []
+
+    def _ensure_dirs(self, siteinfo):
+        slug = siteinfo.sitename.replace('.', '-').lower()
+        base = os.path.join('/var/log/wo/autoupdate', slug)
+        WOFileUtils.mkdir(self, base)
+        return base
+
+    def _backup_site(self, siteinfo, backup_root=None):
+        ts = _now_ts()
+        site = siteinfo.sitename
+        root = backup_root if backup_root else os.path.join(siteinfo.site_path, 'backup')
+        domain_dir = os.path.join(root, site)
+        target_dir = os.path.join(domain_dir, ts)
+        WOFileUtils.mkdir(self, target_dir)
+
+        ok = True
+        # htdocs
+        src = os.path.join(siteinfo.site_path, 'htdocs')
+        if os.path.isdir(src):
+            try:
+                WOFileUtils.copyfiles(self, src, os.path.join(target_dir, 'htdocs'))
+            except Exception as e:
+                Log.warn(self, f'Failed to backup htdocs: {str(e)}')
+                ok = False
+
+        # config and DB
+        cfg = self._find_config_file(siteinfo.site_path)
+        if cfg:
+            try:
+                WOFileUtils.copyfile(self, cfg, os.path.join(target_dir, os.path.basename(cfg)))
+            except Exception as e:
+                Log.warn(self, f'Failed to backup config file: {str(e)}')
+                ok = False
+
+        if not create_database_backup(self, siteinfo, target_dir, site):
+            ok = False
+
+        # metadata
+        meta = collect_site_metadata(self, siteinfo, site)
+        try:
+            with open(os.path.join(target_dir, 'vhost.json'), 'w') as f:
+                json.dump(meta, f, default=str, indent=2)
+        except OSError as e:
+            Log.warn(self, f'Failed to save metadata: {str(e)}')
+            ok = False
+
+        if ok:
+            if not create_site_archive(self, domain_dir, ts):
+                ok = False
+
+        archive = os.path.join(domain_dir, f'{ts}.tar.zst')
+        return ok, archive
+
+    def _find_config_file(self, site_path):
+        # find *-config.php or htdocs/wp-config.php
+        for name in os.listdir(site_path):
+            if name.endswith('-config.php'):
+                return os.path.join(site_path, name)
+        wp_cfg = os.path.join(site_path, 'htdocs', 'wp-config.php')
+        return wp_cfg if os.path.isfile(wp_cfg) else None
+
+    def _run_wp_json(self, cwd, args):
+        try:
+            proc = subprocess.run(args, cwd=cwd, text=True, capture_output=True)
+            stdout = proc.stdout.strip()
+            if proc.returncode != 0:
+                Log.debug(self, f'WP-CLI error: {proc.stderr}')
+                return proc.returncode, None
+            data = json.loads(stdout) if stdout else []
+            return 0, data
+        except Exception as e:
+            Log.debug(self, f'_run_wp_json failed: {str(e)}')
+            return 1, None
+
+    def _check_updates(self, siteinfo):
+        htdocs = os.path.join(siteinfo.site_path, 'htdocs')
+        wp = '/usr/local/bin/wp'
+        need = {'core': False, 'plugins': [], 'themes': []}
+
+        # core
+        rc, core = self._run_wp_json(htdocs, [wp, '--allow-root', 'core', 'check-update', '--format=json'])
+        if rc == 0 and core:
+            need['core'] = True
+
+        # plugins
+        rc, plugins = self._run_wp_json(htdocs, [wp, '--allow-root', 'plugin', 'list', '--update=available', '--format=json'])
+        if rc == 0 and plugins:
+            need['plugins'] = [p.get('name') for p in plugins if p.get('update') == 'available']
+
+        # themes
+        rc, themes = self._run_wp_json(htdocs, [wp, '--allow-root', 'theme', 'list', '--update=available', '--format=json'])
+        if rc == 0 and themes:
+            need['themes'] = [t.get('name') for t in themes if t.get('update') == 'available']
+
+        return need
+
+    def _perform_updates(self, siteinfo, logdir):
+        htdocs = os.path.join(siteinfo.site_path, 'htdocs')
+        wp = '/usr/local/bin/wp'
+        results = {'core': None, 'plugins': None, 'themes': None}
+
+        def run_and_log(name, args):
+            logfile = os.path.join(logdir, f'{name}.log')
+            try:
+                with open(logfile, 'w', encoding='utf-8') as fh:
+                    proc = subprocess.run(args, cwd=htdocs, text=True, capture_output=True)
+                    fh.write(proc.stdout)
+                    if proc.stderr:
+                        fh.write('\nSTDERR:\n')
+                        fh.write(proc.stderr)
+                return proc.returncode == 0
+            except Exception as e:
+                Log.debug(self, f'run_and_log {name} failed: {str(e)}')
+                return False
+
+        # core
+        results['core'] = run_and_log('core', [wp, '--allow-root', 'core', 'update'])
+        # plugins
+        results['plugins'] = run_and_log('plugins', [wp, '--allow-root', 'plugin', 'update', '--all'])
+        # themes
+        results['themes'] = run_and_log('themes', [wp, '--allow-root', 'theme', 'update', '--all'])
+
+        return results
+
+    def _visual_regression(self, siteinfo, logdir):
+        cmd_file = os.path.join(siteinfo.site_path, 'conf', 'autoupdate-visual-cmd')
+        env = os.environ.copy()
+        env['WO_SITE'] = siteinfo.sitename
+        env['WO_WEBROOT'] = siteinfo.site_path
+        logfile = os.path.join(logdir, 'visual-regression.log')
+
+        # Per-site command hook
+        if os.path.isfile(cmd_file):
+            with open(cmd_file, 'r', encoding='utf-8') as fh:
+                cmd = fh.read().strip()
+            try:
+                proc = subprocess.run(cmd, shell=True, text=True, capture_output=True, env=env)
+                with open(logfile, 'w', encoding='utf-8') as f:
+                    f.write(proc.stdout)
+                    if proc.stderr:
+                        f.write('\nSTDERR:\n')
+                        f.write(proc.stderr)
+                return proc.returncode == 0
+            except Exception as e:
+                Log.debug(self, f'visual regression hook failed: {str(e)}')
+                return False
+
+        # No configured tool; skip
+        Log.debug(self, 'No visual regression command configured; skipping')
+        return True
+
+    def _restore_backup(self, archive_path):
+        # Delegate to existing restore command
+        return WOShellExec.cmd_exec(self, ['wo', 'site', 'restore', archive_path], errormsg='restore failed')
+
+    def _write_summary(self, summary):
+        base = '/var/log/wo/autoupdate'
+        try:
+            WOFileUtils.mkdir(self, base)
+            path = os.path.join(base, f'run-{_now_ts()}.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(summary, f, indent=2)
+        except Exception:
+            pass
+
+    def _process_site(self, siteinfo, dry_run=False, skip_visual=False, backup_root=None):
+        site = siteinfo.sitename
+        slug = site.replace('.', '-').lower()
+        logdir = self._ensure_dirs(siteinfo)
+
+        result = {
+            'site': site,
+            'status': 'ok',
+            'checked_at': _now_ts(),
+            'updates': {'core': False, 'plugins': 0, 'themes': 0},
+            'backup': None,
+            'rolled_back': False,
+        }
+
+        if not (siteinfo.site_type and 'wp' in siteinfo.site_type):
+            result['status'] = 'skip'
+            result['reason'] = 'non-wordpress'
+            return result
+
+        need = self._check_updates(siteinfo)
+        result['updates'] = {
+            'core': bool(need.get('core')),
+            'plugins': len(need.get('plugins') or []),
+            'themes': len(need.get('themes') or []),
+        }
+
+        if not (need['core'] or need['plugins'] or need['themes']):
+            result['status'] = 'noop'
+            return result
+
+        if dry_run:
+            result['status'] = 'planned'
+            return result
+
+        # Pre-update: ensure latest BackstopJS reference from current site state (if configured)
+        self._generate_backstop_reference(siteinfo)
+
+        # Backup
+        backup_ok, archive = self._backup_site(siteinfo, backup_root=backup_root)
+        result['backup'] = archive
+        if not backup_ok:
+            result['status'] = 'error'
+            result['error'] = 'backup failed'
+            return result
+
+        # Update
+        upd = self._perform_updates(siteinfo, logdir)
+        if not all(upd.values()):
+            Log.warn(self, f'Update step failed for {site}; attempting restore')
+            if archive:
+                if self._restore_backup(archive):
+                    result['rolled_back'] = True
+            result['status'] = 'error'
+            result['error'] = 'update failed'
+            return result
+
+        # Visual regression
+        if not skip_visual:
+            vr_ok = self._visual_regression(siteinfo, logdir)
+            if not vr_ok:
+                Log.warn(self, f'Visual regression failed for {site}; attempting restore')
+                if archive:
+                    if self._restore_backup(archive):
+                        result['rolled_back'] = True
+                result['status'] = 'error'
+                result['error'] = 'visual regression failed'
+                return result
+
+        return result
+
+    def _refresh_backstop_reference(self, siteinfo):
+        try:
+            conf_dir = os.path.join(siteinfo.site_path, 'conf')
+            cfg = os.path.join(conf_dir, 'backstop.config.js')
+            if os.path.isfile(cfg):
+                # Prefer approve to promote last successful test images
+                ok = WOShellExec.cmd_exec(self, ['npx', 'backstop', 'approve', f'--config={cfg}'])
+                if not ok:
+                    # Fallback to regenerating reference
+                    WOShellExec.cmd_exec(self, ['npx', 'backstop', 'reference', f'--config={cfg}'])
+        except Exception as e:
+            Log.debug(self, f'refresh reference failed: {str(e)}')
+
+    def _generate_backstop_reference(self, siteinfo):
+        try:
+            conf_dir = os.path.join(siteinfo.site_path, 'conf')
+            cfg = os.path.join(conf_dir, 'backstop.config.js')
+            if os.path.isfile(cfg):
+                WOShellExec.cmd_exec(self, ['npx', 'backstop', 'reference', f'--config={cfg}'])
+        except Exception as e:
+            Log.debug(self, f'pre-update reference failed: {str(e)}')
+
+    # ----- Lock helpers -----
+    def _acquire_lock(self, path, max_age_sec=6*60*60):
+        """Attempt to create a lock file atomically. Clean up stale locks.
+
+        The lock file contains JSON with pid and timestamp for debugging.
+        Returns True on success, False if another holder is active.
+        """
+        try:
+            # Fast path: try atomic create
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            try:
+                payload = {'pid': os.getpid(), 'ts': time.time(), 'argv': self.app.argv}
+                os.write(fd, json.dumps(payload).encode('utf-8'))
+            finally:
+                os.close(fd)
+            return True
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                Log.debug(self, f'lock open error for {path}: {str(e)}')
+                return False
+
+        # Lock exists; check staleness
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            pid = int(data.get('pid', 0))
+            ts = float(data.get('ts', 0))
+        except Exception:
+            pid, ts = 0, 0.0
+
+        stale = False
+        # Age check
+        if ts and (time.time() - ts > max_age_sec):
+            stale = True
+        # PID liveness check (POSIX)
+        if pid:
+            try:
+                os.kill(pid, 0)
+                # Process exists; not stale on pid
+            except OSError:
+                stale = True
+
+        if stale:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            # Retry create once
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                try:
+                    payload = {'pid': os.getpid(), 'ts': time.time(), 'argv': self.app.argv, 'recovered': True}
+                    os.write(fd, json.dumps(payload).encode('utf-8'))
+                finally:
+                    os.close(fd)
+                Log.warn(self, f'Recovered stale lock: {path}')
+                return True
+            except OSError:
+                return False
+
+        return False
+
+    def _release_lock(self, path):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def load(app):
+    app.handler.register(WOSiteAutoUpdateController)
+
+    # Add subcommand to scaffold BackstopJS config and hook
+    @expose(help='Setup BackstopJS for a site (config + autoupdate hook)')
+    def backstop(self):
+        pargs = self.app.pargs
+
+        targets = self._discover_targets(pargs) if pargs.all else []
+        if not targets:
+            if not pargs.site_name:
+                try:
+                    while not pargs.site_name:
+                        pargs.site_name = input('Enter site name : ').strip()
+                except IOError as e:
+                    Log.debug(self, str(e))
+                    Log.error(self, 'Unable to input site name, Please try again!')
+            targets = [pargs.site_name.strip()]
+
+        created = 0
+        for name in targets:
+            siteinfo = getSiteInfo(self, name)
+            if not siteinfo or not (siteinfo.site_type and 'wp' in siteinfo.site_type):
+                Log.warn(self, f'Skipping {name}: not a WordPress site or not found')
+                continue
+
+            conf_dir = os.path.join(siteinfo.site_path, 'conf')
+            WOFileUtils.mkdir(self, conf_dir)
+
+            base_url = ('https' if siteinfo.is_ssl else 'http') + f'://{siteinfo.sitename}'
+
+            # Resolve scenarios
+            paths = []
+            if pargs.urls:
+                parts = [p.strip() for p in pargs.urls.split(',') if p.strip()]
+                paths.extend(parts)
+            if pargs.urls_file and os.path.isfile(pargs.urls_file):
+                try:
+                    with open(pargs.urls_file, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            s = line.strip()
+                            if s:
+                                paths.append(s)
+                except OSError as e:
+                    Log.warn(self, f'Could not read urls file: {str(e)}')
+            if not paths:
+                paths = ['/']
+
+            scenarios = []
+            for i, p in enumerate(paths):
+                if not p.startswith('http'):
+                    # join base URL and path
+                    url = base_url.rstrip('/') + ('/' + p.lstrip('/'))
+                else:
+                    url = p
+                scenarios.append({
+                    'label': p if p != '/' else 'home',
+                    'url': url,
+                    'misMatchThreshold': 0.05,
+                    'requireSameDimensions': 'true'  # rendered verbatim
+                })
+
+            slug = siteinfo.sitename.replace('.', '-').lower()
+            config_path = os.path.join(conf_dir, 'backstop.config.js')
+
+            # Prepare data for mustache
+            # Cement/mustache will render lists; ensure no trailing commas via a 'last' flag
+            ms_scenarios = []
+            for idx, sc in enumerate(scenarios):
+                ms_scenarios.append({
+                    'label': sc['label'],
+                    'url': sc['url'],
+                    'misMatchThreshold': sc['misMatchThreshold'],
+                    'requireSameDimensions': sc['requireSameDimensions'],
+                    'last': (idx == len(scenarios) - 1)
+                })
+
+            data = {
+                'slug': slug,
+                'scenarios': ms_scenarios,
+            }
+
+            # Write BackstopJS config
+            WOTemplate.deploy(self, config_path, 'backstop.config.js.mustache', data, overwrite=True)
+
+            # Create autoupdate hook to run tests
+            hook_path = os.path.join(conf_dir, 'autoupdate-visual-cmd')
+            hook_data = { 'config_path': config_path }
+            WOTemplate.deploy(self, hook_path, 'autoupdate-visual-cmd.mustache', hook_data, overwrite=True)
+
+            Log.info(self, f'BackstopJS configured for {name}: {config_path}')
+
+            # Optionally generate or approve baseline
+            if pargs.approve:
+                ok = WOShellExec.cmd_exec(self, ['npx', 'backstop', 'approve', f'--config={config_path}'], errormsg='backstop approve failed')
+                if not ok:
+                    Log.warn(self, 'Failed to approve latest test as baseline')
+            elif pargs.reference:
+                ok = WOShellExec.cmd_exec(self, ['npx', 'backstop', 'reference', f'--config={config_path}'], errormsg='backstop reference failed')
+                if not ok:
+                    Log.warn(self, 'Failed to generate baseline (backstop reference)')
+            created += 1
+
+        Log.info(self, f'BackstopJS setup completed for {created} site(s)')
+
+    # Bind method onto controller class so Cement can find it
+    setattr(WOSiteAutoUpdateController, 'backstop', backstop)
