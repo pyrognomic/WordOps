@@ -54,51 +54,51 @@ class WOSiteAutoUpdateController(CementBaseController):
             Log.warn(self, 'Another autoupdate run is in progress; skipping')
             return
         try:
-        targets = self._discover_targets(pargs)
-        if not targets:
-            Log.info(self, 'No sites to process')
-            return
+            targets = self._discover_targets(pargs)
+            if not targets:
+                Log.info(self, 'No sites to process')
+                return
 
-        summary = { 'started_at': _now_ts(), 'sites': [] }
-        ok_all = True
+            summary = { 'started_at': _now_ts(), 'sites': [] }
+            ok_all = True
 
-        for sitename in targets:
-            # Per-site lock to avoid concurrent operations on the same site
-            site_lock = None
-            try:
-                siteinfo = getSiteInfo(self, sitename)
-                if not siteinfo:
-                    summary['sites'].append({'site': sitename, 'status': 'error', 'error': 'site not found'})
+            for sitename in targets:
+                # Per-site lock to avoid concurrent operations on the same site
+                site_lock = None
+                try:
+                    siteinfo = getSiteInfo(self, sitename)
+                    if not siteinfo:
+                        summary['sites'].append({'site': sitename, 'status': 'error', 'error': 'site not found'})
+                        ok_all = False
+                        continue
+
+                    slug = siteinfo.sitename.replace('.', '-').lower()
+                    site_lock = f'/run/wo-autoupdate-{slug}.lock'
+                    if not self._acquire_lock(site_lock):
+                        Log.warn(self, f'Skipping {sitename}: another update in progress for this site')
+                        summary['sites'].append({'site': sitename, 'status': 'skip', 'reason': 'locked'})
+                        continue
+
+                    res = self._process_site(
+                        siteinfo,
+                        dry_run=pargs.dry_run,
+                        skip_visual=pargs.no_visual,
+                        backup_root=pargs.backup_dir,
+                    )
+                    summary['sites'].append(res)
+                    ok_all = ok_all and res.get('status') == 'ok'
+                except Exception as e:
+                    Log.debug(self, f'Autoupdate error for {sitename}: {str(e)}')
+                    summary['sites'].append({'site': sitename, 'status': 'error', 'error': str(e)})
                     ok_all = False
-                    continue
+                finally:
+                    if site_lock:
+                        self._release_lock(site_lock)
 
-                slug = siteinfo.sitename.replace('.', '-').lower()
-                site_lock = f'/run/wo-autoupdate-{slug}.lock'
-                if not self._acquire_lock(site_lock):
-                    Log.warn(self, f'Skipping {sitename}: another update in progress for this site')
-                    summary['sites'].append({'site': sitename, 'status': 'skip', 'reason': 'locked'})
-                    continue
-
-                res = self._process_site(
-                    siteinfo,
-                    dry_run=pargs.dry_run,
-                    skip_visual=pargs.no_visual,
-                    backup_root=pargs.backup_dir,
-                )
-                summary['sites'].append(res)
-                ok_all = ok_all and res.get('status') == 'ok'
-            except Exception as e:
-                Log.debug(self, f'Autoupdate error for {sitename}: {str(e)}')
-                summary['sites'].append({'site': sitename, 'status': 'error', 'error': str(e)})
-                ok_all = False
-            finally:
-                if site_lock:
-                    self._release_lock(site_lock)
-
-        summary['finished_at'] = _now_ts()
-        self._write_summary(summary)
-        if not ok_all:
-            Log.warn(self, 'One or more sites failed during autoupdate')
+            summary['finished_at'] = _now_ts()
+            self._write_summary(summary)
+            if not ok_all:
+                Log.warn(self, 'One or more sites failed during autoupdate')
         finally:
             self._release_lock(global_lock)
 
