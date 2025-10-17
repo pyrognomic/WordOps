@@ -752,12 +752,14 @@ def _setup_cache_plugins(controller, data):
 
 
 def _normalise_template_source(entry, entry_type, index):
-    source = entry.get('slug') or entry.get('url')
-    if not source:
+    slug = entry.get('slug')
+    url = entry.get('url')
+    if not slug and not url:
         raise SiteError(
             f"WordPress template {entry_type} entry at index {index} must define a 'slug' or 'url'.")
-    label = entry.get('slug') or entry.get('url')
-    return source, label
+    source = url or slug
+    label = slug or url
+    return source, label, slug, url
 
 
 def _extract_bool(entry, key, *, default=None, section="WordPress template"):
@@ -809,10 +811,12 @@ def load_wp_template(controller, template_path):
             if not isinstance(entry, dict):
                 raise SiteError(
                     f"WordPress template theme entry at index {index} must be a JSON object.")
-            source, label = _normalise_template_source(entry, 'theme', index)
+            source, label, slug, url = _normalise_template_source(entry, 'theme', index)
             theme_data = {
                 'source': source,
                 'label': label,
+                'slug': slug,
+                'url': url,
                 'activate': _extract_bool(entry, 'activate', default=False,
                                           section="WordPress template theme"),
                 'network': _extract_bool(entry, 'network', default=None,
@@ -828,7 +832,7 @@ def load_wp_template(controller, template_path):
             if not isinstance(entry, dict):
                 raise SiteError(
                     f"WordPress template plugin entry at index {index} must be a JSON object.")
-            source, label = _normalise_template_source(entry, 'plugin', index)
+            source, label, slug, url = _normalise_template_source(entry, 'plugin', index)
             plugin_options = entry.get('options', {})
             if 'options' in entry and not isinstance(plugin_options, dict):
                 raise SiteError(
@@ -836,6 +840,8 @@ def load_wp_template(controller, template_path):
             plugin_data = {
                 'source': source,
                 'label': label,
+                'slug': slug,
+                'url': url,
                 'activate': _extract_bool(entry, 'activate', default=False,
                                           section="WordPress template plugin"),
                 'network': _extract_bool(entry, 'network', default=None,
@@ -1182,43 +1188,45 @@ def _serialise_wp_option_value(value):
     return str(value)
 
 
-def installwp_theme(self, theme_name, data, activate=False, network=None):
+def installwp_theme(self, theme_source, data, activate=False, network=None, activation_name=None):
     """Install and optionally activate a WordPress theme."""
     webroot = data['webroot']
-    Log.wait(self, f"Installing theme {theme_name}")
+    Log.wait(self, f"Installing theme {theme_source}")
+    target_name = activation_name or theme_source
 
     try:
-        _execute_wp_theme_command(self, webroot, "install", theme_name)
+        _execute_wp_theme_command(self, webroot, "install", theme_source)
 
         if data.get('multisite'):
             enable_kwargs = {}
             if network is True:
                 enable_kwargs['network'] = True
-            _execute_wp_theme_command(self, webroot, "enable", theme_name, **enable_kwargs)
+            _execute_wp_theme_command(self, webroot, "enable", target_name, **enable_kwargs)
 
         if activate:
-            _execute_wp_theme_command(self, webroot, "activate", theme_name)
+            _execute_wp_theme_command(self, webroot, "activate", target_name)
 
-        _log_theme_operation(self, "install", theme_name, success=True)
+        _log_theme_operation(self, "install", target_name, success=True)
     except SiteError as e:
-        _log_theme_operation(self, "install", theme_name, success=False)
+        _log_theme_operation(self, "install", target_name, success=False)
         raise e
 
 
-def installwp_plugin(self, plugin_name, data, activate=True, network=None):
+def installwp_plugin(self, plugin_source, data, activate=True, network=None, activation_name=None):
     """
     Install and activate WordPress plugin - refactored for better maintainability.
 
     Args:
-        plugin_name (str): Name of the plugin to install
+        plugin_source (str): Identifier or path for installing the plugin
         data (dict): Site data containing webroot and multisite info
     """
     webroot = data['webroot']
-    Log.wait(self, f"Installing plugin {plugin_name}")
+    Log.wait(self, f"Installing plugin {plugin_source}")
+    target_name = activation_name or plugin_source
 
     try:
         # Install plugin
-        _execute_wp_plugin_command(self, webroot, "install", plugin_name)
+        _execute_wp_plugin_command(self, webroot, "install", plugin_source)
 
         # Activate plugin (with network flag for multisite)
         if activate:
@@ -1226,12 +1234,12 @@ def installwp_plugin(self, plugin_name, data, activate=True, network=None):
             network_flag = data.get('multisite') if network is None else network
             if network_flag:
                 activation_kwargs['network'] = True
-            _execute_wp_plugin_command(self, webroot, "activate", plugin_name, **activation_kwargs)
+            _execute_wp_plugin_command(self, webroot, "activate", target_name, **activation_kwargs)
 
-        _log_plugin_operation(self, "install", plugin_name, success=True)
+        _log_plugin_operation(self, "install", target_name, success=True)
         return 1
     except SiteError as e:
-        _log_plugin_operation(self, "install", plugin_name, success=False)
+        _log_plugin_operation(self, "install", target_name, success=False)
         raise e
 
 
@@ -1335,15 +1343,21 @@ def apply_wp_template(self, data):
 
     themes = template.get('themes', [])
     for theme in themes:
-        installwp_theme(self, theme['source'], data,
+        install_source = theme.get('url') or theme.get('source')
+        activation_name = theme.get('slug') or theme.get('label')
+        installwp_theme(self, install_source, data,
                         activate=theme.get('activate', False),
-                        network=theme.get('network'))
+                        network=theme.get('network'),
+                        activation_name=activation_name)
 
     plugins = template.get('plugins', [])
     for plugin in plugins:
-        installwp_plugin(self, plugin['source'], data,
+        install_source = plugin.get('url') or plugin.get('source')
+        activation_name = plugin.get('slug') or plugin.get('label')
+        installwp_plugin(self, install_source, data,
                          activate=plugin.get('activate', False),
-                         network=plugin.get('network'))
+                         network=plugin.get('network'),
+                         activation_name=activation_name)
         for option_name, option_value in plugin.get('options', {}).items():
             plugin_payload = _serialise_wp_option_value(option_value)
             setupwp_plugin(self, plugin['label'], option_name, plugin_payload, data)
@@ -2835,5 +2849,3 @@ def handle_site_error_cleanup(self, domain, webroot, db_name=None, db_user=None,
 
     Log.error(self, "Check the log for details: "
               "`tail /var/log/wo/wordops.log` and please try again")
-
-
