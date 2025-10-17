@@ -13,13 +13,13 @@
       "activate": true
     },
     {
-      "slug": "fluent-booking-pro",
-      "url": "/home/plugins/fluent-booking-pro-1.9.10-m4hr0p.zip",
+      "slug": "fluent-booking",
+      "url": "/home/plugins/fluent-booking.1.9.11.zip",
       "activate": true
     },
     {
-      "slug": "fluent-booking",
-      "url": "/home/plugins/fluent-booking.1.9.11.zip",
+      "slug": "fluent-booking-pro",
+      "url": "/home/plugins/fluent-booking-pro-1.9.10-m4hr0p.zip",
       "activate": true
     },
     {
@@ -28,13 +28,13 @@
       "activate": true
     },
     {
-      "slug": "fluent-smtp",
-      "url": "/home/plugins/fluent-smtp.2.2.92.zip",
+      "slug": "fluentcampaign-pro",
+      "url": "/home/plugins/fluentcampaign-pro-2.9.80-pd1kk4.zip",
       "activate": true
     },
     {
-      "slug": "fluentcampaign-pro",
-      "url": "/home/plugins/fluentcampaign-pro-2.9.80-pd1kk4.zip",
+      "slug": "fluent-smtp",
+      "url": "/home/plugins/fluent-smtp.2.2.92.zip",
       "activate": true
     },
     {
@@ -43,13 +43,13 @@
       "activate": true
     },
     {
-      "slug": "kadence-blocks-pro",
-      "url": "/home/plugins/kadence-blocks-pro.2.8.3.zip",
+      "slug": "kadence-blocks",
+      "url": "/home/plugins/kadence-blocks.zip",
       "activate": true
     },
     {
-      "slug": "kadence-blocks",
-      "url": "/home/plugins/kadence-blocks.zip",
+      "slug": "kadence-blocks-pro",
+      "url": "/home/plugins/kadence-blocks-pro.2.8.3.zip",
       "activate": true
     },
     {
