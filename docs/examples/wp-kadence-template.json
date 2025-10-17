@@ -1,0 +1,62 @@
+{
+  "themes": [
+    {
+      "slug": "/home/plugins/kadence.1.3.6.zip",
+      "activate": true
+    }
+  ],
+  "plugins": [
+    {
+      "slug": "/home/plugins/easy-code-manager.10.51.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/fluent-booking-pro-1.9.10-m4hr0p.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/fluent-booking.1.9.11.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/fluent-crm.2.9.80.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/fluent-smtp.2.2.92.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/fluentcampaign-pro-2.9.80-pd1kk4.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/flying-press-v4.16.4.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/kadence-blocks-pro.2.8.3.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/kadence-blocks.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/kadence-conversions.1.1.4.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/kadence-creative-kit.1.0.1.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/kadence-pro.1.1.15.zip",
+      "activate": true
+    },
+    {
+      "slug": "/home/plugins/kadence-starter-templates.zip",
+      "activate": true
+    }
+  ]
+}
