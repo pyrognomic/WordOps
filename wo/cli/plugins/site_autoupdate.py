@@ -86,7 +86,8 @@ class WOSiteAutoUpdateController(CementBaseController):
                         backup_root=pargs.backup_dir,
                     )
                     summary['sites'].append(res)
-                    ok_all = ok_all and res.get('status') == 'ok'
+                    if res.get('status') == 'error':
+                        ok_all = False
                 except Exception as e:
                     Log.debug(self, f'Autoupdate error for {sitename}: {str(e)}')
                     summary['sites'].append({'site': sitename, 'status': 'error', 'error': str(e)})
