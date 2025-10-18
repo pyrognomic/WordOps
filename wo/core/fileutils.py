@@ -4,6 +4,7 @@ import os
 import pwd
 import shutil
 import codecs
+import errno
 
 from wo.core.logging import Log
 
@@ -248,8 +249,10 @@ class WOFileUtils():
         try:
             Log.debug(self, "Creating directories: {0}"
                       .format(path))
-            os.makedirs(path)
+            os.makedirs(path, exist_ok=True)
         except OSError as e:
+            if e.errno == errno.EEXIST and os.path.isdir(path):
+                return
             Log.debug(self, "{0}".format(e.strerror))
             Log.error(self, "Unable to create directory {0} ".format(path))
 
