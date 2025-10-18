@@ -552,6 +552,8 @@ def load(app):
 
             slug = siteinfo.sitename.replace('.', '-').lower()
             config_path = os.path.join(conf_dir, 'backstop.config.js')
+            paths_root = os.path.join(conf_dir, 'backstop_data')
+            paths_root_js = paths_root.replace('\\', '/')
 
             # Prepare data for mustache
             # Cement/mustache will render lists; ensure no trailing commas via a 'last' flag
@@ -568,6 +570,7 @@ def load(app):
             data = {
                 'slug': slug,
                 'scenarios': ms_scenarios,
+                'paths_root': paths_root_js,
             }
 
             # Write BackstopJS config
