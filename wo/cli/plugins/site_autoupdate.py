@@ -9,12 +9,8 @@ from datetime import datetime
 from cement.core.controller import CementBaseController, expose
 
 from wo.cli.plugins.sitedb import getAllsites, getSiteInfo
-from wo.cli.plugins.site_functions import (
-    SiteError,
-    create_database_backup,
-    collect_site_metadata,
-    create_site_archive,
-)
+from wo.cli.plugins.site_functions import SiteError
+from wo.core.backup import WOBackup
 from wo.core.fileutils import WOFileUtils
 from wo.core.logging import Log
 from wo.core.shellexec import WOShellExec
@@ -169,59 +165,91 @@ class WOSiteAutoUpdateController(CementBaseController):
         WOFileUtils.mkdir(self, base)
         return base
 
-    def _backup_site(self, siteinfo, backup_root=None):
-        ts = _now_ts()
-        site = siteinfo.sitename
-        root = backup_root if backup_root else os.path.join(siteinfo.site_path, 'backup')
-        domain_dir = os.path.join(root, site)
-        target_dir = os.path.join(domain_dir, ts)
-        WOFileUtils.mkdir(self, target_dir)
+    def _backup_site(self, siteinfo, backup_root=None, update_info=None, has_updates=False):
+        """Create a backup using the centralized backup service.
 
-        ok = True
-        # htdocs
-        src = os.path.join(siteinfo.site_path, 'htdocs')
-        if os.path.isdir(src):
-            try:
-                WOFileUtils.copyfiles(self, src, os.path.join(target_dir, 'htdocs'))
-            except Exception as e:
-                Log.warn(self, f'Failed to backup htdocs: {str(e)}')
-                ok = False
+        Args:
+            siteinfo: Site information object
+            backup_root: Optional custom backup directory
+            update_info: Dict with update details for metadata
+            has_updates: Whether WordPress updates are available
 
-        # config and DB
-        cfg = self._find_config_file(siteinfo.site_path)
-        if cfg:
-            try:
-                WOFileUtils.copyfile(self, cfg, os.path.join(target_dir, os.path.basename(cfg)))
-            except Exception as e:
-                Log.warn(self, f'Failed to backup config file: {str(e)}')
-                ok = False
+        Returns:
+            Tuple of (success: bool, archive_path: str or None)
+        """
+        # Prepare metadata
+        metadata_extra = {
+            'timestamp': _now_ts()
+        }
 
-        if not create_database_backup(self, siteinfo, target_dir, site):
-            ok = False
+        # Set backup type and add update information if updates exist
+        if has_updates:
+            metadata_extra['backup_type'] = 'pre-update'
+            if update_info:
+                metadata_extra['pending_updates'] = update_info
+        else:
+            metadata_extra['backup_type'] = 'scheduled'
 
-        # metadata
-        meta = collect_site_metadata(self, siteinfo, site)
+        backup_service = WOBackup(self, siteinfo)
+        success, archive = backup_service.create(
+            backup_type=WOBackup.TYPE_FULL,
+            backup_root=backup_root,
+            metadata_extra=metadata_extra
+        )
+
+        # Rename archive to include "preupdate" if updates exist
+        if success and archive and has_updates:
+            archive = self._rename_backup_with_preupdate(archive)
+
+        if success:
+            if has_updates:
+                Log.info(self, f"Pre-update backup created: {archive}")
+            else:
+                Log.info(self, f"Scheduled backup created: {archive}")
+        else:
+            Log.error(self, f"Backup failed for {siteinfo.sitename}")
+
+        return success, archive
+
+    def _rename_backup_with_preupdate(self, archive_path):
+        """Rename backup archive to include 'preupdate' in filename.
+
+        Args:
+            archive_path: Original archive path
+
+        Returns:
+            New archive path with 'preupdate' in name
+        """
+        import os
+        import shutil
+
         try:
-            with open(os.path.join(target_dir, 'vhost.json'), 'w') as f:
-                json.dump(meta, f, default=str, indent=2)
-        except OSError as e:
-            Log.warn(self, f'Failed to save metadata: {str(e)}')
-            ok = False
+            # Parse the original path
+            # Format: /path/to/site/backup/example.com/2025-01-20_14-25-30.tar.zst
+            directory = os.path.dirname(archive_path)
+            filename = os.path.basename(archive_path)
 
-        if ok:
-            if not create_site_archive(self, domain_dir, ts):
-                ok = False
+            # Extract timestamp and extension
+            # Format: 2025-01-20_14-25-30.tar.zst
+            if filename.endswith('.tar.zst'):
+                timestamp = filename[:-8]  # Remove .tar.zst
+                new_filename = f"{timestamp}_preupdate.tar.zst"
+            else:
+                # Fallback if format is different
+                new_filename = filename.replace('.tar.zst', '_preupdate.tar.zst')
 
-        archive = os.path.join(domain_dir, f'{ts}.tar.zst')
-        return ok, archive
+            new_path = os.path.join(directory, new_filename)
 
-    def _find_config_file(self, site_path):
-        # find *-config.php or htdocs/wp-config.php
-        for name in os.listdir(site_path):
-            if name.endswith('-config.php'):
-                return os.path.join(site_path, name)
-        wp_cfg = os.path.join(site_path, 'htdocs', 'wp-config.php')
-        return wp_cfg if os.path.isfile(wp_cfg) else None
+            # Rename the file
+            shutil.move(archive_path, new_path)
+            Log.debug(self, f"Renamed backup: {filename} -> {new_filename}")
+
+            return new_path
+
+        except Exception as e:
+            Log.debug(self, f"Failed to rename backup: {str(e)}")
+            # Return original path if rename fails
+            return archive_path
 
     def _run_wp_json(self, cwd, args):
         try:
@@ -429,6 +457,7 @@ echo json_encode($result, JSON_PRETTY_PRINT);
             result['reason'] = 'non-wordpress'
             return result
 
+        # Check for updates first
         need = self._check_updates(siteinfo)
         result['updates'] = {
             'core': bool(need.get('core')),
@@ -436,26 +465,43 @@ echo json_encode($result, JSON_PRETTY_PRINT);
             'themes': len(need.get('themes') or []),
         }
 
-        if not (need['core'] or need['plugins'] or need['themes']):
-            result['status'] = 'noop'
-            return result
+        has_updates = bool(need['core'] or need['plugins'] or need['themes'])
 
         if dry_run:
-            result['status'] = 'planned'
+            result['status'] = 'planned' if has_updates else 'noop'
             return result
 
         # Pre-update: ensure latest BackstopJS reference from current site state (if configured)
         self._generate_backstop_reference(siteinfo)
 
-        # Backup
-        backup_ok, archive = self._backup_site(siteinfo, backup_root=backup_root)
+        # ALWAYS backup (even if no updates)
+        # Metadata and archive name will differ based on whether updates exist
+        update_info = {
+            'core': need.get('core', False),
+            'plugins': need.get('plugins', []),
+            'themes': need.get('themes', []),
+        }
+
+        backup_ok, archive = self._backup_site(
+            siteinfo,
+            backup_root=backup_root,
+            update_info=update_info,
+            has_updates=has_updates  # Pass this to control archive naming
+        )
         result['backup'] = archive
+
         if not backup_ok:
             result['status'] = 'error'
             result['error'] = 'backup failed'
             return result
 
-        # Update
+        # If no updates available, exit after backup
+        if not has_updates:
+            Log.info(self, f"No updates available for {site}, backup created")
+            result['status'] = 'backup-only'
+            return result
+
+        # Apply updates (only if available)
         upd = self._perform_updates(siteinfo, logdir)
         if not all(upd.values()):
             Log.warn(self, f'Update step failed for {site}; attempting restore')
