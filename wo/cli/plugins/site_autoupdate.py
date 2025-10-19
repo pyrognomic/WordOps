@@ -237,24 +237,107 @@ class WOSiteAutoUpdateController(CementBaseController):
             return 1, None
 
     def _check_updates(self, siteinfo):
+        """Check for available updates using WordPress dashboard methods.
+
+        This uses the same approach as wp-admin/update-core.php:
+        - get_core_updates() for WordPress core
+        - get_plugin_updates() for plugins
+        - get_theme_updates() for themes
+
+        These functions require wp-admin includes and are more reliable than
+        parsing WP-CLI output directly.
+        """
         htdocs = os.path.join(siteinfo.site_path, 'htdocs')
         wp = '/usr/local/bin/wp'
         need = {'core': False, 'plugins': [], 'themes': []}
 
-        # core
-        rc, core = self._run_wp_json(htdocs, [wp, '--allow-root', 'core', 'check-update', '--format=json'])
-        if rc == 0 and core:
-            need['core'] = True
+        # Use wp eval with the WordPress admin update functions
+        # This is the same method used by the WordPress dashboard
+        check_script = """
+require_once ABSPATH . 'wp-admin/includes/update.php';
+require_once ABSPATH . 'wp-admin/includes/plugin.php';
+require_once ABSPATH . 'wp-admin/includes/theme.php';
 
-        # plugins
-        rc, plugins = self._run_wp_json(htdocs, [wp, '--allow-root', 'plugin', 'list', '--update=available', '--format=json'])
-        if rc == 0 and plugins:
-            need['plugins'] = [p.get('name') for p in plugins if p.get('update') == 'available']
+// Force fresh update checks (like dashboard does with ?force-check=1)
+wp_update_plugins();
+wp_update_themes();
+wp_version_check(array(), true);
 
-        # themes
-        rc, themes = self._run_wp_json(htdocs, [wp, '--allow-root', 'theme', 'list', '--update=available', '--format=json'])
-        if rc == 0 and themes:
-            need['themes'] = [t.get('name') for t in themes if t.get('update') == 'available']
+$result = array(
+    'core' => array(),
+    'plugins' => array(),
+    'themes' => array()
+);
+
+// Core updates (same as update-core.php:246)
+$core_updates = get_core_updates();
+if (!empty($core_updates)) {
+    foreach ($core_updates as $update) {
+        if (isset($update->response) && $update->response !== 'latest') {
+            $result['core'][] = array(
+                'version' => $update->version,
+                'current' => isset($update->current) ? $update->current : '',
+                'response' => $update->response
+            );
+        }
+    }
+}
+
+// Plugin updates (same as update-core.php:467)
+$plugin_updates = get_plugin_updates();
+if (!empty($plugin_updates)) {
+    foreach ($plugin_updates as $plugin_file => $plugin_data) {
+        $result['plugins'][] = array(
+            'name' => $plugin_data->Name,
+            'file' => $plugin_file,
+            'current' => $plugin_data->Version,
+            'new' => $plugin_data->update->new_version
+        );
+    }
+}
+
+// Theme updates (same as update-core.php:640)
+$theme_updates = get_theme_updates();
+if (!empty($theme_updates)) {
+    foreach ($theme_updates as $stylesheet => $theme) {
+        $result['themes'][] = array(
+            'name' => $theme->get('Name'),
+            'stylesheet' => $stylesheet,
+            'current' => $theme->get('Version'),
+            'new' => isset($theme->update['new_version']) ? $theme->update['new_version'] : ''
+        );
+    }
+}
+
+echo json_encode($result, JSON_PRETTY_PRINT);
+"""
+
+        cmd = [wp, '--allow-root', 'eval', check_script]
+        rc, update_data = self._run_wp_json(htdocs, cmd)
+
+        if rc == 0 and update_data:
+            # Core updates
+            core_updates = update_data.get('core', [])
+            need['core'] = len(core_updates) > 0
+
+            # Plugin updates
+            plugin_updates = update_data.get('plugins', [])
+            need['plugins'] = [p['name'] for p in plugin_updates]
+
+            # Theme updates
+            theme_updates = update_data.get('themes', [])
+            need['themes'] = [t['name'] for t in theme_updates]
+
+            # Log detailed update information
+            if need['core']:
+                for upd in core_updates:
+                    Log.debug(self, f"Core update available: {upd.get('current')} -> {upd.get('version')}")
+            for p in plugin_updates:
+                Log.debug(self, f"Plugin update: {p['name']}: {p['current']} -> {p['new']}")
+            for t in theme_updates:
+                Log.debug(self, f"Theme update: {t['name']}: {t['current']} -> {t['new']}")
+        else:
+            Log.warn(self, f"Failed to check updates using WordPress functions (rc={rc})")
 
         return need
 
