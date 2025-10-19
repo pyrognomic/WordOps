@@ -6,6 +6,11 @@ import time
 import errno
 from datetime import datetime
 
+try:
+    import pwd  # POSIX-only
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    pwd = None
+
 from cement.core.controller import CementBaseController, expose
 
 from wo.cli.plugins.sitedb import getAllsites, getSiteInfo
@@ -251,9 +256,73 @@ class WOSiteAutoUpdateController(CementBaseController):
             # Return original path if rename fails
             return archive_path
 
-    def _run_wp_json(self, cwd, args):
+    def _site_slug(self, siteinfo):
+        return siteinfo.sitename.replace('.', '-').lower()
+
+    def _site_user(self, siteinfo):
+        return f'php-{self._site_slug(siteinfo)}'
+
+    def _wp_cli_run(self, siteinfo, args, **kwargs):
+        """Execute a WP-CLI command as the site's PHP-FPM user to keep permissions consistent.
+
+        Raises:
+            SiteError: if the platform cannot switch users or the expected site user is missing.
+        """
+        user = self._site_user(siteinfo)
+
+        # Prepare environment overrides without mutating caller data
+        env_override = kwargs.pop('env', None)
+        final_env = os.environ.copy()
+        if env_override:
+            final_env.update(env_override)
+
+        if pwd is None:
+            raise SiteError('WP-CLI commands require POSIX user management to switch to the site owner')
+
         try:
-            proc = subprocess.run(args, cwd=cwd, text=True, capture_output=True)
+            pw_entry = pwd.getpwnam(user)
+        except KeyError:
+            raise SiteError(f'Site PHP-FPM user {user} not found; aborting WP-CLI operation')
+
+        slug = self._site_slug(siteinfo)
+        wp_home = os.path.join('/tmp', f'wp-cli-{slug}')
+        cache_dir = os.path.join(wp_home, 'cache')
+        for path in (wp_home, cache_dir):
+            try:
+                os.makedirs(path, exist_ok=True)
+                if hasattr(os, 'chown'):
+                    os.chown(path, pw_entry.pw_uid, pw_entry.pw_gid)
+            except PermissionError:
+                Log.debug(self, f'Unable to adjust ownership for {path}; continuing with existing permissions')
+            except OSError as e:
+                Log.debug(self, f'Failed to prepare WP-CLI path {path}: {str(e)}')
+
+        final_env.setdefault('HOME', wp_home)
+        final_env.setdefault('WP_CLI_CACHE_DIR', cache_dir)
+        kwargs['env'] = final_env
+
+        can_switch = all(hasattr(os, attr) for attr in ('getuid', 'setuid', 'setgid'))
+        if not can_switch:
+            raise SiteError(f'User switching not supported on this platform; cannot run WP-CLI as {user}')
+
+        if os.getuid() == pw_entry.pw_uid:
+            return subprocess.run(args, **kwargs)
+
+        def demote():
+            if hasattr(os, 'initgroups'):
+                try:
+                    os.initgroups(user, pw_entry.pw_gid)
+                except OSError as e:
+                    Log.debug(self, f'initgroups failed for {user}: {str(e)}')
+            os.setgid(pw_entry.pw_gid)
+            os.setuid(pw_entry.pw_uid)
+
+        kwargs['preexec_fn'] = demote
+        return subprocess.run(args, **kwargs)
+
+    def _run_wp_json(self, siteinfo, cwd, args):
+        try:
+            proc = self._wp_cli_run(siteinfo, args, cwd=cwd, text=True, capture_output=True)
             stdout = proc.stdout.strip()
             if proc.returncode != 0:
                 Log.debug(self, f'WP-CLI error: {proc.stderr}')
@@ -340,8 +409,8 @@ if (!empty($theme_updates)) {
 echo json_encode($result, JSON_PRETTY_PRINT);
 """
 
-        cmd = [wp, '--allow-root', 'eval', check_script]
-        rc, update_data = self._run_wp_json(htdocs, cmd)
+        cmd = [wp, 'eval', check_script]
+        rc, update_data = self._run_wp_json(siteinfo, htdocs, cmd)
 
         if rc == 0 and update_data:
             # Core updates
@@ -378,7 +447,7 @@ echo json_encode($result, JSON_PRETTY_PRINT);
             logfile = os.path.join(logdir, f'{name}.log')
             try:
                 with open(logfile, 'w', encoding='utf-8') as fh:
-                    proc = subprocess.run(args, cwd=htdocs, text=True, capture_output=True)
+                    proc = self._wp_cli_run(siteinfo, args, cwd=htdocs, text=True, capture_output=True)
                     fh.write(proc.stdout)
                     if proc.stderr:
                         fh.write('\nSTDERR:\n')
@@ -389,11 +458,11 @@ echo json_encode($result, JSON_PRETTY_PRINT);
                 return False
 
         # core
-        results['core'] = run_and_log('core', [wp, '--allow-root', 'core', 'update'])
+        results['core'] = run_and_log('core', [wp, 'core', 'update'])
         # plugins
-        results['plugins'] = run_and_log('plugins', [wp, '--allow-root', 'plugin', 'update', '--all'])
+        results['plugins'] = run_and_log('plugins', [wp, 'plugin', 'update', '--all'])
         # themes
-        results['themes'] = run_and_log('themes', [wp, '--allow-root', 'theme', 'update', '--all'])
+        results['themes'] = run_and_log('themes', [wp, 'theme', 'update', '--all'])
 
         return results
 
