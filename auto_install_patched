@@ -392,6 +392,23 @@ wo_install_node() {
     return 0
 }
 
+wo_install_playwright() {
+    if ! command_exists npm || ! command_exists npx; then
+        return 1
+    fi
+
+    # Install playwright globally
+    npm install -g playwright >/dev/null 2>&1 || return 1
+
+    # Install system dependencies first (libraries needed to run browsers)
+    npx playwright install-deps >/dev/null 2>&1 || return 1
+
+    # Install chromium browser (now it can run with the dependencies in place)
+    npx playwright install chromium >/dev/null 2>&1 || return 1
+
+    return 0
+}
+
 ###
 # 3 - Create/migrate the essentials
 ###
@@ -1016,6 +1033,7 @@ else
     _run wo_update_latest
     _run secure_wo_db
     _run wo_install_node "Installing Node.js for BackstopJS"
+    _run wo_install_playwright "Installing Playwright for visual regression testing"
     _run wo_install_rclone "Ensuring rclone is present"
     _run wo_configure_rclone "Configuring rclone"
 
