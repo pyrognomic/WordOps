@@ -279,6 +279,10 @@ class WOSiteAutoUpdateController(CementBaseController):
         if pwd is None:
             raise SiteError('WP-CLI commands require POSIX user management to switch to the site owner')
 
+        # Ensure we're running as root before attempting privilege drop
+        if os.getuid() != 0:
+            raise SiteError('WP-CLI user switching requires running as root')
+
         try:
             pw_entry = pwd.getpwnam(user)
         except KeyError:
@@ -287,6 +291,8 @@ class WOSiteAutoUpdateController(CementBaseController):
         slug = self._site_slug(siteinfo)
         wp_home = os.path.join('/tmp', f'wp-cli-{slug}')
         cache_dir = os.path.join(wp_home, 'cache')
+        config_path = os.path.join(wp_home, 'wp-cli.yml')
+
         for path in (wp_home, cache_dir):
             try:
                 os.makedirs(path, exist_ok=True)
@@ -299,14 +305,12 @@ class WOSiteAutoUpdateController(CementBaseController):
 
         final_env.setdefault('HOME', wp_home)
         final_env.setdefault('WP_CLI_CACHE_DIR', cache_dir)
+        final_env.setdefault('WP_CLI_CONFIG_PATH', config_path)
         kwargs['env'] = final_env
 
         can_switch = all(hasattr(os, attr) for attr in ('getuid', 'setuid', 'setgid'))
         if not can_switch:
             raise SiteError(f'User switching not supported on this platform; cannot run WP-CLI as {user}')
-
-        if os.getuid() == pw_entry.pw_uid:
-            return subprocess.run(args, **kwargs)
 
         def demote():
             if hasattr(os, 'initgroups'):
@@ -316,6 +320,7 @@ class WOSiteAutoUpdateController(CementBaseController):
                     Log.debug(self, f'initgroups failed for {user}: {str(e)}')
             os.setgid(pw_entry.pw_gid)
             os.setuid(pw_entry.pw_uid)
+            os.umask(0o022)  # Ensure files are created with proper permissions
 
         kwargs['preexec_fn'] = demote
         return subprocess.run(args, **kwargs)
