@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import shutil
@@ -489,7 +490,15 @@ echo json_encode($result, JSON_PRETTY_PRINT);
                     if proc.stderr:
                         f.write('\nSTDERR:\n')
                         f.write(proc.stderr)
-                return proc.returncode == 0
+
+                success = proc.returncode == 0
+
+                # Cleanup old BackstopJS test results (keep only last 5 directories)
+                if success:
+                    backstop_test_dir = os.path.join(siteinfo.site_path, 'conf', 'backstop_data', 'bitmaps_test')
+                    self._cleanup_old_items(backstop_test_dir, keep=5, dirs_only=True)
+
+                return success
             except Exception as e:
                 Log.debug(self, f'visual regression hook failed: {str(e)}')
                 return False
@@ -509,8 +518,56 @@ echo json_encode($result, JSON_PRETTY_PRINT);
             path = os.path.join(base, f'run-{_now_ts()}.json')
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(summary, f, indent=2)
+            # Cleanup old run logs (keep only last 5 files, ignore subdirectories)
+            self._cleanup_old_items(base, keep=5, files_only=True)
         except Exception:
             pass
+
+    def _cleanup_old_items(self, directory, keep=5, pattern=None, files_only=False, dirs_only=False):
+        """Remove old files/directories, keeping only the most recent ones.
+
+        Args:
+            directory: Directory to search
+            keep: Number of most recent items to keep
+            pattern: Optional glob pattern to filter items (e.g., 'run-*.json')
+            files_only: If True, only clean up files (ignore subdirectories)
+            dirs_only: If True, only clean up directories (ignore files)
+        """
+        try:
+            if not os.path.isdir(directory):
+                return
+
+            if pattern:
+                items = glob.glob(os.path.join(directory, pattern))
+            else:
+                # Get all items in directory
+                items = [os.path.join(directory, item) for item in os.listdir(directory)]
+
+            # Filter by type if requested
+            if files_only:
+                items = [item for item in items if os.path.isfile(item)]
+            elif dirs_only:
+                items = [item for item in items if os.path.isdir(item)]
+
+            if len(items) <= keep:
+                return
+
+            # Sort by modification time, newest first
+            items.sort(key=os.path.getmtime, reverse=True)
+
+            # Remove old items
+            for path in items[keep:]:
+                try:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                        Log.debug(self, f'Removed old directory: {path}')
+                    else:
+                        os.remove(path)
+                        Log.debug(self, f'Removed old file: {path}')
+                except Exception as e:
+                    Log.debug(self, f'Failed to remove {path}: {str(e)}')
+        except Exception as e:
+            Log.debug(self, f'Cleanup failed for {directory}: {str(e)}')
 
     def _process_site(self, siteinfo, dry_run=False, skip_visual=False, backup_root=None):
         site = siteinfo.sitename
