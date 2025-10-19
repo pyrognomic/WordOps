@@ -545,9 +545,6 @@ echo json_encode($result, JSON_PRETTY_PRINT);
             result['status'] = 'planned' if has_updates else 'noop'
             return result
 
-        # Pre-update: ensure latest BackstopJS reference from current site state (if configured)
-        self._generate_backstop_reference(siteinfo)
-
         # ALWAYS backup (even if no updates)
         # Metadata and archive name will differ based on whether updates exist
         update_info = {
@@ -574,6 +571,9 @@ echo json_encode($result, JSON_PRETTY_PRINT);
             Log.info(self, f"No updates available for {site}, backup created")
             result['status'] = 'backup-only'
             return result
+
+        # Pre-update: ensure latest BackstopJS reference from current site state (if configured)
+        self._generate_backstop_reference(siteinfo)
 
         # Apply updates (only if available)
         upd = self._perform_updates(siteinfo, logdir)
