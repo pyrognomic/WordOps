@@ -71,7 +71,7 @@ class WOSiteUpdateController(CementBaseController):
                      action='store', nargs='?')),
             (['-le', '--letsencrypt'],
                 dict(help="configure letsencrypt ssl for the site",
-                     action='store' or 'store_const',
+                     action='store',
                      choices=('on', 'off', 'renew', 'subdomain',
                               'wildcard', 'clean', 'purge'),
                      const='on', nargs='?')),
@@ -80,19 +80,19 @@ class WOSiteUpdateController(CementBaseController):
                      action='store_true')),
             (['--dns'],
                 dict(help="choose dns provider api for letsencrypt",
-                     action='store' or 'store_const',
+                     action='store',
                      const='dns_cf', nargs='?')),
             (['--dnsalias'],
                 dict(help="set domain used for acme dns alias validation",
                      action='store', nargs='?')),
             (['--hsts'],
                 dict(help="configure hsts for the site",
-                     action='store' or 'store_const',
+                     action='store',
                      choices=('on', 'off'),
                      const='on', nargs='?')),
             (['--ngxblocker'],
                 dict(help="enable Ultimate Nginx bad bot blocker",
-                     action='store' or 'store_const',
+                     action='store',
                      choices=('on', 'off'),
                      const='on', nargs='?')),
             (['--proxy'],
@@ -133,11 +133,60 @@ class WOSiteUpdateController(CementBaseController):
         else:
             self.doupdatesite(pargs)
 
-    def doupdatesite(self, pargs):
-        pargs = self.app.pargs
+    def configure_nginx_helper(self, cache_method, enable_purge, data):
+        """
+        Configure nginx-helper plugin with specified cache method.
+
+        Args:
+            cache_method: Cache method to use ('enable_fastcgi', 'enable_redis', or other)
+            enable_purge: Whether to enable purge (0 or 1)
+            data: Site data dictionary
+        """
+        try:
+            plugin_data_object = {
+                "log_level": "INFO",
+                "log_filesize": 5,
+                "enable_purge": enable_purge,
+                "enable_map": "0" if enable_purge else 0,
+                "enable_log": 0,
+                "enable_stamp": enable_purge,
+                "purge_homepage_on_new": 1,
+                "purge_homepage_on_edit": 1,
+                "purge_homepage_on_del": 1,
+                "purge_archive_on_new": 1,
+                "purge_archive_on_edit": 0,
+                "purge_archive_on_del": 0,
+                "purge_archive_on_new_comment": 0,
+                "purge_archive_on_deleted_comment": 0,
+                "purge_page_on_mod": 1,
+                "purge_page_on_new_comment": 1,
+                "purge_page_on_deleted_comment": 1,
+                "cache_method": cache_method,
+                "purge_method": "get_request",
+                "redis_hostname": "127.0.0.1",
+                "redis_port": "6379",
+                "redis_prefix": "nginx-cache:"
+            }
+            plugin_data = json.dumps(plugin_data_object)
+            setupwp_plugin(self, 'nginx-helper',
+                          'rt_wp_nginx_helper_options',
+                          plugin_data, data)
+        except SiteError as e:
+            Log.debug(self, str(e))
+            Log.info(self, Log.FAIL + "Update nginx-helper "
+                     "settings failed. "
+                     "Check the log for details:"
+                     " `tail /var/log/wo/wordops.log` "
+                     "and please try again")
+            return 1
+        return 0
+
+    def doupdatesite(self, pargs=None):
+        if pargs is None:
+            pargs = self.app.pargs
         letsencrypt = False
-        for pargs_version in WOVar.wo_php_versions:
-            globals()[pargs_version] = False
+        # Use dictionary instead of globals to track PHP versions
+        php_versions_state = {version: False for version in WOVar.wo_php_versions}
 
         data = dict()
         try:
@@ -199,9 +248,8 @@ class WOSiteUpdateController(CementBaseController):
 
         if ((pargs.password or pargs.hsts or
              pargs.ngxblocker or pargs.letsencrypt == 'renew') and not (
-            pargs.html or pargs.php or pargs.php74 or pargs.php80 or
-            pargs.php81 or pargs.php82 or
-            pargs.php83 or pargs.php84 or pargs.mysql or pargs.wp or pargs.wpfc or pargs.wpsc or
+            pargs.html or pargs.php or PHPVersionManager.has_any_php_version(pargs) or
+            pargs.mysql or pargs.wp or pargs.wpfc or pargs.wpsc or
             pargs.wprocket or pargs.wpce or
                 pargs.wpsubdir or pargs.wpsubdomain)):
 
@@ -381,10 +429,7 @@ class WOSiteUpdateController(CementBaseController):
                 data['multisite'] = False
                 data['wpsubdir'] = False
             elif (oldsitetype == 'php' or oldsitetype == 'mysql' or
-                  oldsitetype == 'php73' or oldsitetype == 'php74' or
-                  oldsitetype == 'php80' or oldsitetype == 'php81' or
-                  oldsitetype == 'php82' or oldsitetype == 'php83' or
-                  oldsitetype == 'php84'):
+                  oldsitetype in PHPVersionManager.SUPPORTED_VERSIONS):
                 data['static'] = False
                 data['wp'] = False
                 data['multisite'] = False
@@ -421,7 +466,7 @@ class WOSiteUpdateController(CementBaseController):
             if getattr(pargs, pargs_version):
                 Log.debug(self, f"pargs.{pargs_version} detected")
                 data[pargs_version] = True
-                globals()[pargs_version] = True
+                php_versions_state[pargs_version] = True
                 break
 
         for pargs_version, version in WOVar.wo_php_versions.items():
@@ -429,18 +474,16 @@ class WOSiteUpdateController(CementBaseController):
             Log.debug(self, f"old_version_var for {version} = {old_version_var}")
 
             if getattr(pargs, pargs_version):
-                if globals()[pargs_version] is old_version_var:
+                if php_versions_state[pargs_version] is old_version_var:
                     Log.info(
                         self, f"PHP {version} is already enabled for given site")
                     setattr(pargs, pargs_version, False)
 
-            if (data and (not pargs.php74) and
-                    (not pargs.php80) and (not pargs.php81) and (not pargs.php82)
-                    and (not pargs.php83) and (not pargs.php84)):
+            if data and not PHPVersionManager.has_any_php_version(pargs):
                 data[pargs_version] = bool(old_version_var is True)
                 Log.debug(
                     self, f"data {pargs_version} = {data[pargs_version]}")
-                globals()[pargs_version] = bool(old_version_var is True)
+                php_versions_state[pargs_version] = bool(old_version_var is True)
 
         if pargs.letsencrypt:
             acme_domains = []
@@ -517,8 +560,8 @@ class WOSiteUpdateController(CementBaseController):
             data['basic'] = False
             cache = 'wpce'
 
-        # Vérification si rien n'a changé
-        if all(globals()[version_key] is bool(check_php_version == version) for version_key,
+        # Check if nothing has changed
+        if all(php_versions_state[version_key] is bool(check_php_version == version) for version_key,
                version in WOVar.wo_php_versions.items()) and (stype == oldsitetype
                                                               and cache == oldcachetype
                                                               and stype != 'alias'
@@ -527,9 +570,9 @@ class WOSiteUpdateController(CementBaseController):
             Log.debug(self, "Nothing to update")
             return 1
 
-        # Mise à jour de la version PHP
+        # Update PHP version
         for pargs_version, version in WOVar.wo_php_versions.items():
-            if globals()[pargs_version] is True:
+            if php_versions_state[pargs_version] is True:
                 data['wo_php'] = pargs_version
                 Log.debug(self, f"data wo_php set to {pargs_version}")
                 check_php_version = version
@@ -812,9 +855,8 @@ class WOSiteUpdateController(CementBaseController):
                 return 1
 
         # Setup WordPress if old sites are html/php/mysql sites
-        if data['wp'] and oldsitetype in ['html', 'proxy', 'php', 'php72',
-                                          'mysql', 'php73', 'php74', 'php80',
-                                          'php81', 'php82', 'php83', 'php84']:
+        non_wp_types = ['html', 'proxy', 'php', 'mysql'] + PHPVersionManager.SUPPORTED_VERSIONS
+        if data['wp'] and oldsitetype in non_wp_types:
             try:
                 wo_wp_creds = setupwordpress(self, data)
             except SiteError as e:
@@ -843,122 +885,23 @@ class WOSiteUpdateController(CementBaseController):
                                   'wpce'] and
                  (data['wpfc'])) or (oldsitetype == 'wp' and
                                      data['multisite'] and data['wpfc'])):
-                try:
-                    plugin_data_object = {
-                        "log_level": "INFO",
-                        "log_filesize": 5,
-                        "enable_purge": 1,
-                        "enable_map": "0",
-                        "enable_log": 0,
-                        "enable_stamp": 1,
-                        "purge_homepage_on_new": 1,
-                        "purge_homepage_on_edit": 1,
-                        "purge_homepage_on_del": 1,
-                        "purge_archive_on_new": 1,
-                        "purge_archive_on_edit": 0,
-                        "purge_archive_on_del": 0,
-                        "purge_archive_on_new_comment": 0,
-                        "purge_archive_on_deleted_comment": 0,
-                        "purge_page_on_mod": 1,
-                        "purge_page_on_new_comment": 1,
-                        "purge_page_on_deleted_comment": 1,
-                        "cache_method": "enable_fastcgi",
-                        "purge_method": "get_request",
-                        "redis_hostname": "127.0.0.1",
-                                          "redis_port": "6379",
-                                          "redis_prefix": "nginx-cache:"}
-                    plugin_data = json.dumps(plugin_data_object)
-                    setupwp_plugin(self, 'nginx-helper',
-                                   'rt_wp_nginx_helper_options',
-                                   plugin_data, data)
-                except SiteError as e:
-                    Log.debug(self, str(e))
-                    Log.info(self, Log.FAIL + "Update nginx-helper "
-                             "settings failed. "
-                             "Check the log for details:"
-                             " `tail /var/log/wo/wordops.log` "
-                             "and please try again")
-                    return 1
+                result = self.configure_nginx_helper("enable_fastcgi", 1, data)
+                if result != 0:
+                    return result
 
             elif ((oldcachetype in ['wpsc', 'basic', 'wpfc',
                                     'wprocket', 'wpce'] and
                    (data['wpredis'])) or (oldsitetype == 'wp' and
                                           data['multisite'] and
                                           data['wpredis'])):
-                try:
-                    plugin_data_object = {
-                        "log_level": "INFO",
-                        "log_filesize": 5,
-                        "enable_purge": 1,
-                        "enable_map": "0",
-                        "enable_log": 0,
-                        "enable_stamp": 1,
-                        "purge_homepage_on_new": 1,
-                        "purge_homepage_on_edit": 1,
-                        "purge_homepage_on_del": 1,
-                        "purge_archive_on_new": 1,
-                        "purge_archive_on_edit": 0,
-                        "purge_archive_on_del": 0,
-                        "purge_archive_on_new_comment": 0,
-                        "purge_archive_on_deleted_comment": 0,
-                        "purge_page_on_mod": 1,
-                        "purge_page_on_new_comment": 1,
-                        "purge_page_on_deleted_comment": 1,
-                        "cache_method": "enable_redis",
-                        "purge_method": "get_request",
-                        "redis_hostname": "127.0.0.1",
-                                          "redis_port": "6379",
-                                          "redis_prefix": "nginx-cache:"}
-                    plugin_data = json.dumps(plugin_data_object)
-                    setupwp_plugin(self, 'nginx-helper',
-                                   'rt_wp_nginx_helper_options',
-                                   plugin_data, data)
-                except SiteError as e:
-                    Log.debug(self, str(e))
-                    Log.info(self, Log.FAIL + "Update nginx-helper "
-                             "settings failed. "
-                             "Check the log for details:"
-                             " `tail /var/log/wo/wordops.log` "
-                             "and please try again")
-                    return 1
+                result = self.configure_nginx_helper("enable_redis", 1, data)
+                if result != 0:
+                    return result
             else:
-                try:
-                    # disable nginx-helper
-                    plugin_data_object = {
-                        "log_level": "INFO",
-                        "log_filesize": 5,
-                        "enable_purge": 0,
-                        "enable_map": 0,
-                        "enable_log": 0,
-                        "enable_stamp": 0,
-                        "purge_homepage_on_new": 1,
-                        "purge_homepage_on_edit": 1,
-                        "purge_homepage_on_del": 1,
-                        "purge_archive_on_new": 1,
-                        "purge_archive_on_edit": 0,
-                        "purge_archive_on_del": 0,
-                        "purge_archive_on_new_comment": 0,
-                        "purge_archive_on_deleted_comment": 0,
-                        "purge_page_on_mod": 1,
-                        "purge_page_on_new_comment": 1,
-                        "purge_page_on_deleted_comment": 1,
-                        "cache_method": "enable_redis",
-                        "purge_method": "get_request",
-                        "redis_hostname": "127.0.0.1",
-                                          "redis_port": "6379",
-                                          "redis_prefix": "nginx-cache:"}
-                    plugin_data = json.dumps(plugin_data_object)
-                    setupwp_plugin(
-                        self, 'nginx-helper',
-                        'rt_wp_nginx_helper_options', plugin_data, data)
-                except SiteError as e:
-                    Log.debug(self, str(e))
-                    Log.info(self, Log.FAIL + "Update nginx-helper "
-                             "settings failed. "
-                             "Check the log for details:"
-                             " `tail /var/log/wo/wordops.log` "
-                             "and please try again")
-                    return 1
+                # disable nginx-helper
+                result = self.configure_nginx_helper("enable_redis", 0, data)
+                if result != 0:
+                    return result
 
             if ((oldcachetype in ['wpsc', 'basic',
                                   'wpfc', 'wprocket', 'wpredis'] and

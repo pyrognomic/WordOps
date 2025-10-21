@@ -1,6 +1,12 @@
-"""Stack Plugin for WordOps"""
+"""Stack Plugin for WordOps - Refactored Version
+
+This module manages stack operations (install, remove, purge) for WordOps.
+It has been refactored to improve maintainability, reduce code duplication,
+and add type hints.
+"""
 
 import os
+from typing import List, Tuple, Dict, Optional, Any
 
 from cement.core.controller import CementBaseController, expose
 
@@ -20,11 +26,815 @@ from wo.core.nginx import check_config
 from wo.core.git import WOGit
 
 
-def wo_stack_hook(app):
+def wo_stack_hook(app: Any) -> None:
+    """Hook function for stack operations."""
     pass
 
 
+class PackageManager:
+    """Helper class to manage package lists and validation."""
+
+    def __init__(self, controller: 'WOStackController'):
+        self.controller = controller
+        self.apt_packages: List[str] = []
+        self.packages: List[List[str]] = []
+
+    def add_apt_package(self, package: str) -> None:
+        """Add an APT package to the install list."""
+        if package not in self.apt_packages:
+            self.apt_packages.append(package)
+
+    def add_apt_packages(self, packages: List[str]) -> None:
+        """Add multiple APT packages to the install list."""
+        for package in packages:
+            self.add_apt_package(package)
+
+    def add_download_package(self, package: List[str]) -> None:
+        """Add a download package to the install list.
+
+        Args:
+            package: [url, destination_path, description]
+        """
+        if package not in self.packages:
+            self.packages.append(package)
+
+    def add_download_packages(self, packages: List[List[str]]) -> None:
+        """Add multiple download packages to the install list."""
+        for package in packages:
+            self.add_download_package(package)
+
+
+class StackComponentInstaller:
+    """Handles installation of individual stack components."""
+
+    def __init__(self, controller: 'WOStackController', pkg_manager: PackageManager):
+        self.controller = controller
+        self.pkg_manager = pkg_manager
+
+    def install_nginx(self) -> None:
+        """Install Nginx if not already installed."""
+        if not WOAptGet.is_exec(self.controller, 'nginx'):
+            Log.debug(self.controller, "Setting apt_packages variable for Nginx")
+            self.pkg_manager.add_apt_packages(WOVar.wo_nginx)
+        else:
+            Log.debug(self.controller, "Nginx already installed")
+
+    def install_redis(self) -> None:
+        """Install Redis if not already installed."""
+        if not WOAptGet.is_installed(self.controller, 'redis-server'):
+            self.pkg_manager.add_apt_packages(WOVar.wo_redis)
+        else:
+            Log.debug(self.controller, "Redis already installed")
+
+    def install_php_version(self, version_key: str, version_number: str) -> None:
+        """Install a specific PHP version.
+
+        Args:
+            version_key: e.g., 'php74', 'php80'
+            version_number: e.g., '7.4', '8.0'
+        """
+        Log.debug(self.controller, f"Setting apt_packages variable for PHP {version_number}")
+        if not WOAptGet.is_installed(self.controller, f'php{version_number}-fpm'):
+            wo_vars = {
+                'php74': WOVar.wo_php74,
+                'php80': WOVar.wo_php80,
+                'php81': WOVar.wo_php81,
+                'php82': WOVar.wo_php82,
+                'php83': WOVar.wo_php83,
+                'php84': WOVar.wo_php84,
+            }
+            self.pkg_manager.add_apt_packages(wo_vars[version_key])
+            self.pkg_manager.add_apt_packages(WOVar.wo_php_extra)
+        else:
+            Log.debug(self.controller, f"PHP {version_number} already installed")
+            Log.info(self.controller, f"PHP {version_number} already installed")
+
+    def install_mysql(self) -> None:
+        """Install MySQL/MariaDB if not already installed."""
+        Log.debug(self.controller, "Setting apt_packages variable for MySQL")
+        if not WOMysql.mariadb_ping(self.controller):
+            self.pkg_manager.add_apt_packages(WOVar.wo_mysql)
+        else:
+            Log.debug(self.controller, "MySQL already installed and alive")
+            Log.info(self.controller, "MySQL already installed and alive")
+
+    def install_mysql_client(self) -> None:
+        """Install MySQL client for remote MySQL server."""
+        Log.debug(self.controller, "Setting apt_packages variable for MySQL Client")
+        if not WOMysql.mariadb_ping(self.controller):
+            self.pkg_manager.add_apt_packages(WOVar.wo_mysql_client)
+        else:
+            Log.debug(self.controller, "MySQL already installed and alive")
+            Log.info(self.controller, "MySQL already installed and alive")
+
+    def install_wpcli(self) -> None:
+        """Install WP-CLI if not already installed."""
+        if not WOAptGet.is_exec(self.controller, 'wp'):
+            Log.debug(self.controller, "Setting packages variable for WP-CLI")
+            self.pkg_manager.add_download_package([
+                WOVar.wpcli_url,
+                "/usr/local/bin/wp",
+                "WP-CLI"
+            ])
+        else:
+            Log.debug(self.controller, "WP-CLI is already installed")
+            Log.info(self.controller, "WP-CLI is already installed")
+
+    def install_fail2ban(self) -> None:
+        """Install Fail2ban if not already installed."""
+        if not WOAptGet.is_installed(self.controller, 'fail2ban'):
+            Log.debug(self.controller, "Setting apt_packages variable for Fail2ban")
+            self.pkg_manager.add_apt_packages(WOVar.wo_fail2ban)
+        else:
+            Log.debug(self.controller, "Fail2ban already installed")
+            Log.info(self.controller, "Fail2ban already installed")
+
+    def install_clamav(self) -> None:
+        """Install ClamAV if not already installed."""
+        if not WOAptGet.is_installed(self.controller, 'clamav'):
+            Log.debug(self.controller, "Setting apt_packages variable for ClamAV")
+            self.pkg_manager.add_apt_packages(WOVar.wo_clamav)
+        else:
+            Log.debug(self.controller, "ClamAV already installed")
+            Log.info(self.controller, "ClamAV already installed")
+
+    def install_ufw(self) -> None:
+        """Install UFW firewall."""
+        Log.debug(self.controller, "Setting apt_packages variable for UFW")
+        self.pkg_manager.add_apt_package("ufw")
+
+    def install_sendmail(self) -> None:
+        """Install Sendmail if not already installed."""
+        Log.debug(self.controller, "Setting apt_packages variable for Sendmail")
+        if (not WOAptGet.is_installed(self.controller, 'sendmail') and
+                not WOAptGet.is_installed(self.controller, 'postfix')):
+            self.pkg_manager.add_apt_package("sendmail")
+        else:
+            if WOAptGet.is_installed(self.controller, 'sendmail'):
+                Log.debug(self.controller, "Sendmail already installed")
+                Log.info(self.controller, "Sendmail already installed")
+            else:
+                Log.debug(self.controller, "Another mta (Postfix) is already installed")
+                Log.info(self.controller, "Another mta (Postfix) is already installed")
+
+    def install_proftpd(self) -> None:
+        """Install ProFTPd if not already installed."""
+        if not WOAptGet.is_installed(self.controller, 'proftpd-basic'):
+            Log.debug(self.controller, "Setting apt_packages variable for ProFTPd")
+            self.pkg_manager.add_apt_package("proftpd-basic")
+        else:
+            Log.debug(self.controller, "ProFTPd already installed")
+            Log.info(self.controller, "ProFTPd already installed")
+
+    def install_phpmyadmin(self) -> None:
+        """Install phpMyAdmin if not already installed."""
+        if not os.path.isdir(f'{WOVar.wo_webroot}22222/htdocs/db/pma'):
+            Log.debug(self.controller, "Setting packages variable for phpMyAdmin")
+            self.pkg_manager.add_download_package([
+                "https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz",
+                "/var/lib/wo/tmp/pma.tar.gz",
+                "PHPMyAdmin"
+            ])
+        else:
+            Log.debug(self.controller, "phpMyAdmin already installed")
+            Log.info(self.controller, "phpMyAdmin already installed")
+
+    def install_phpredisadmin(self) -> None:
+        """Install phpRedisAdmin if not already installed."""
+        if not os.path.isdir(f'{WOVar.wo_webroot}22222/htdocs/cache/redis/phpRedisAdmin'):
+            Log.debug(self.controller, "Setting packages variable for phpRedisAdmin")
+            self.pkg_manager.add_download_package([
+                "https://github.com/erikdubbelboer/phpRedisAdmin/archive/v1.11.3.tar.gz",
+                "/var/lib/wo/tmp/pra.tar.gz",
+                "phpRedisAdmin"
+            ])
+        else:
+            Log.debug(self.controller, "phpRedisAdmin already installed")
+            Log.info(self.controller, "phpRedisAdmin already installed")
+
+    def install_composer(self) -> None:
+        """Install Composer if not already installed."""
+        if not WOAptGet.is_exec(self.controller, 'composer'):
+            Log.debug(self.controller, "Setting packages variable for Composer")
+            self.pkg_manager.add_download_package([
+                "https://getcomposer.org/installer",
+                "/var/lib/wo/tmp/composer-install",
+                "Composer"
+            ])
+        else:
+            Log.debug(self.controller, "Composer already installed")
+            Log.info(self.controller, "Composer already installed")
+
+    def install_adminer(self) -> None:
+        """Install Adminer if not already installed."""
+        adminer_path = f"{WOVar.wo_webroot}22222/htdocs/db/adminer/index.php"
+        if not os.path.isfile(adminer_path):
+            Log.debug(self.controller, "Setting packages variable for Adminer")
+            self.pkg_manager.add_download_packages([
+                [
+                    "https://www.adminer.org/latest.php",
+                    f"{WOVar.wo_webroot}22222/htdocs/db/adminer/index.php",
+                    "Adminer"
+                ],
+                [
+                    "https://raw.githubusercontent.com/vrana/adminer/master/designs/pepa-linha/adminer.css",
+                    f"{WOVar.wo_webroot}22222/htdocs/db/adminer/adminer.css",
+                    "Adminer theme"
+                ]
+            ])
+        else:
+            Log.debug(self.controller, "Adminer already installed")
+            Log.info(self.controller, "Adminer already installed")
+
+    def install_mysqltuner(self) -> None:
+        """Install MySQLTuner if not already installed."""
+        if not os.path.isfile("/usr/bin/mysqltuner"):
+            Log.debug(self.controller, "Setting packages variable for MySQLTuner")
+            self.pkg_manager.add_download_package([
+                "https://raw.githubusercontent.com/major/MySQLTuner-perl/master/mysqltuner.pl",
+                "/usr/bin/mysqltuner",
+                "MySQLTuner"
+            ])
+        else:
+            Log.debug(self.controller, "MySQLtuner already installed")
+            Log.info(self.controller, "MySQLtuner already installed")
+
+    def install_netdata(self) -> None:
+        """Install Netdata monitoring suite if not already installed."""
+        if not os.path.isdir('/opt/netdata') and not os.path.isdir("/etc/netdata"):
+            Log.debug(self.controller, "Setting packages variable for Netdata")
+            self.pkg_manager.add_download_package([
+                WOVar.netdata_script_url,
+                '/var/lib/wo/tmp/kickstart.sh',
+                'Netdata'
+            ])
+        else:
+            Log.debug(self.controller, "Netdata already installed")
+            Log.info(self.controller, "Netdata already installed")
+
+    def install_dashboard(self) -> None:
+        """Install WordOps Dashboard if not already installed."""
+        if not os.path.isfile(f'{WOVar.wo_webroot}22222/htdocs/index.php'):
+            Log.debug(self.controller, "Setting packages variable for WO-Dashboard")
+            self.pkg_manager.add_download_package([
+                f"https://github.com/WordOps/wordops-dashboard/releases/download/v{WOVar.wo_dashboard}/wordops-dashboard.tar.gz",
+                "/var/lib/wo/tmp/wo-dashboard.tar.gz",
+                "WordOps Dashboard"
+            ])
+        else:
+            Log.debug(self.controller, "WordOps dashboard already installed")
+            Log.info(self.controller, "WordOps dashboard already installed")
+
+    def install_extplorer(self) -> None:
+        """Install eXtplorer file manager if not already installed."""
+        if not os.path.isdir(f'{WOVar.wo_webroot}22222/htdocs/files'):
+            Log.debug(self.controller, "Setting packages variable for eXtplorer")
+            self.pkg_manager.add_download_package([
+                f"https://github.com/soerennb/extplorer/archive/v{WOVar.wo_extplorer}.tar.gz",
+                "/var/lib/wo/tmp/extplorer.tar.gz",
+                "eXtplorer"
+            ])
+        else:
+            Log.debug(self.controller, "eXtplorer is already installed")
+            Log.info(self.controller, "eXtplorer is already installed")
+
+    def install_ngxblocker(self) -> None:
+        """Install Nginx Ultimate Bad Bot Blocker if not already installed."""
+        if not os.path.isdir('/etc/nginx/bots.d'):
+            Log.debug(self.controller, "Setting packages variable for ngxblocker")
+            self.pkg_manager.add_download_package([
+                "https://raw.githubusercontent.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/master/install-ngxblocker",
+                "/usr/local/sbin/install-ngxblocker",
+                "ngxblocker"
+            ])
+        else:
+            Log.debug(self.controller, "ngxblocker is already installed")
+            Log.info(self.controller, "ngxblocker is already installed")
+
+    def install_cheat(self) -> None:
+        """Install cheat.sh if not already installed."""
+        if not os.path.exists('/usr/local/bin/cht.sh') and not os.path.exists('/usr/bin/cht.sh'):
+            Log.debug(self.controller, 'Setting packages variable for cheat.sh')
+            self.pkg_manager.add_download_packages([
+                [
+                    "https://raw.githubusercontent.com/chubin/cheat.sh/master/share/cht.sh.txt",
+                    "/usr/local/bin/cht.sh",
+                    "cheat.sh"
+                ],
+                [
+                    "https://raw.githubusercontent.com/chubin/cheat.sh/master/share/bash_completion.txt",
+                    "/etc/bash_completion.d/cht.sh",
+                    "bash_completion"
+                ]
+            ])
+
+    def install_nanorc(self) -> None:
+        """Install nanorc syntax highlighting if not already installed."""
+        if not os.path.exists('/usr/share/nano-syntax-highlighting'):
+            Log.debug(self.controller, "Setting packages variable for nanorc")
+            self.pkg_manager.add_apt_package('nano')
+
+    def install_utils(self) -> None:
+        """Install various utility packages."""
+        Log.debug(self.controller, "Setting packages variable for utils")
+        self.pkg_manager.add_download_packages([
+            [
+                "https://raw.githubusercontent.com/rtCamp/eeadmin/master/cache/nginx/clean.php",
+                f"{WOVar.wo_webroot}22222/htdocs/cache/nginx/clean.php",
+                "clean.php"
+            ],
+            [
+                "https://raw.github.com/rlerdorf/opcache-status/master/opcache.php",
+                f"{WOVar.wo_webroot}22222/htdocs/cache/opcache/opcache.php",
+                "opcache.php"
+            ],
+            [
+                "https://raw.github.com/amnuts/opcache-gui/master/index.php",
+                f"{WOVar.wo_webroot}22222/htdocs/cache/opcache/opgui.php",
+                "Opgui"
+            ],
+            [
+                "https://raw.githubusercontent.com/mlazarov/ocp/master/ocp.php",
+                f"{WOVar.wo_webroot}22222/htdocs/cache/opcache/ocp.php",
+                "OCP.php"
+            ],
+            [
+                "https://github.com/jokkedk/webgrind/archive/master.tar.gz",
+                '/var/lib/wo/tmp/webgrind.tar.gz',
+                'Webgrind'
+            ],
+            [
+                "https://www.percona.com/get/pt-query-digest",
+                "/usr/bin/pt-query-advisor",
+                "pt-query-advisor"
+            ]
+        ])
+
+
+class BrotliManager:
+    """Handles Brotli compression enable/disable operations."""
+
+    @staticmethod
+    def enable(controller: 'WOStackController') -> None:
+        """Enable Brotli compression for Nginx."""
+        Log.wait(controller, "Enabling Brotli")
+        WOGit.add(controller, ["/etc/nginx"], msg="Commiting pending changes")
+
+        if os.path.exists('/etc/nginx/conf.d/brotli.conf.disabled'):
+            WOFileUtils.mvfile(controller,
+                             '/etc/nginx/conf.d/brotli.conf.disabled',
+                             '/etc/nginx/conf.d/brotli.conf')
+        else:
+            Log.failed(controller, "Enabling Brotli")
+            Log.error(controller, "Brotli is already enabled")
+
+        if os.path.exists('/etc/nginx/conf.d/gzip.conf'):
+            WOFileUtils.mvfile(controller,
+                             '/etc/nginx/conf.d/gzip.conf',
+                             '/etc/nginx/conf.d/gzip.conf.disabled')
+
+        if check_config(controller):
+            Log.valide(controller, "Enabling Brotli")
+            WOGit.add(controller, ["/etc/nginx"], msg="Enabling Brotli")
+            WOService.reload_service(controller, "nginx")
+        else:
+            Log.failed(controller, "Enabling Brotli")
+            WOGit.rollback(controller, ["/etc/nginx"])
+
+    @staticmethod
+    def disable(controller: 'WOStackController') -> None:
+        """Disable Brotli compression for Nginx."""
+        Log.wait(controller, "Disabling Brotli")
+        WOGit.add(controller, ["/etc/nginx"], msg="Commiting pending changes")
+
+        if os.path.exists('/etc/nginx/conf.d/brotli.conf'):
+            WOFileUtils.mvfile(controller,
+                             '/etc/nginx/conf.d/brotli.conf',
+                             '/etc/nginx/conf.d/brotli.conf.disabled')
+        else:
+            Log.failed(controller, "Disabling Brotli")
+            Log.error(controller, "Brotli is already disabled")
+
+        if os.path.exists('/etc/nginx/conf.d/gzip.conf.disabled'):
+            WOFileUtils.mvfile(controller,
+                             '/etc/nginx/conf.d/gzip.conf.disabled',
+                             '/etc/nginx/conf.d/gzip.conf')
+
+        if check_config(controller):
+            Log.valide(controller, "Disabling Brotli")
+            WOGit.add(controller, ["/etc/nginx"], msg="Disabling Brotli")
+            WOService.reload_service(controller, "nginx")
+        else:
+            Log.failed(controller, "Disabling Brotli")
+            WOGit.rollback(controller, ["/etc/nginx"])
+
+
+class StackRemover:
+    """Handles removal and purging of stack components."""
+
+    def __init__(self, controller: 'WOStackController', purge: bool = False):
+        self.controller = controller
+        self.purge = purge
+        self.apt_packages: List[str] = []
+        self.packages: List[str] = []
+
+    def _get_packages_for_removal(self, pargs: Any) -> Tuple[List[str], List[str]]:
+        """Determine which packages to remove based on arguments.
+
+        Args:
+            pargs: Parsed arguments from command line
+
+        Returns:
+            Tuple of (apt_packages, file_packages)
+        """
+        # Process argument flags
+        if pargs.php:
+            self._set_default_php_version(pargs)
+
+        if pargs.mariadb:
+            pargs.mysql = True
+
+        # Handle --all flag
+        if pargs.all:
+            self._handle_all_flag(pargs)
+
+        # Handle preset stacks
+        if pargs.web:
+            self._handle_web_stack(pargs)
+
+        if pargs.admin:
+            self._handle_admin_stack(pargs)
+
+        if pargs.security:
+            self._handle_security_stack(pargs)
+
+        # Process individual components
+        self._process_individual_components(pargs)
+
+        return self.apt_packages, self.packages
+
+    def _set_default_php_version(self, pargs: Any) -> None:
+        """Set the default PHP version based on config."""
+        if self.controller.app.config.has_section('php'):
+            config_php_ver = self.controller.app.config.get('php', 'version')
+            current_php = config_php_ver.replace(".", "")
+            setattr(pargs, f'php{current_php}', True)
+
+    def _handle_all_flag(self, pargs: Any) -> None:
+        """Handle --all flag for removal."""
+        pargs.web = True
+        pargs.admin = True
+        for version_key in WOVar.wo_php_versions.keys():
+            setattr(pargs, version_key, True)
+        pargs.fail2ban = True
+        pargs.proftpd = True
+        pargs.utils = True
+        pargs.redis = True
+        pargs.security = True
+        pargs.nanorc = True
+        self.packages.append(f'{WOVar.wo_webroot}22222/htdocs')
+
+    def _handle_web_stack(self, pargs: Any) -> None:
+        """Handle --web stack flag."""
+        pargs.nginx = True
+        pargs.php = True
+        pargs.mysql = True
+        pargs.wpcli = True
+        pargs.sendmail = True
+
+    def _handle_admin_stack(self, pargs: Any) -> None:
+        """Handle --admin stack flag."""
+        pargs.composer = True
+        pargs.utils = True
+        pargs.netdata = True
+        pargs.mysqltuner = True
+        pargs.cheat = True
+        if self.purge:
+            self.packages.append(f'{WOVar.wo_webroot}22222/htdocs')
+
+    def _handle_security_stack(self, pargs: Any) -> None:
+        """Handle --security stack flag."""
+        pargs.fail2ban = True
+        pargs.clamav = True
+        pargs.ufw = True
+        pargs.ngxblocker = True
+
+    def _process_individual_components(self, pargs: Any) -> None:
+        """Process individual component flags for removal."""
+        # Nginx
+        if pargs.nginx and WOAptGet.is_installed(self.controller, 'nginx-custom'):
+            Log.debug(self.controller, "Removing apt_packages variable of Nginx")
+            self.apt_packages.extend(WOVar.wo_nginx)
+
+        # PHP versions
+        self._process_php_versions(pargs)
+
+        # Redis
+        if pargs.redis and WOAptGet.is_installed(self.controller, 'redis-server'):
+            Log.debug(self.controller, "Remove apt_packages variable of Redis")
+            self.apt_packages.append("redis-server")
+
+        # MySQL/MariaDB
+        if pargs.mysql:
+            self._process_mysql_removal(pargs)
+
+        # MySQL Client
+        if pargs.mysqlclient and WOMysql.mariadb_ping(self.controller):
+            Log.debug(self.controller, "Removing apt_packages variable for MySQL Client")
+            self.apt_packages.extend(WOVar.wo_mysql_client)
+
+        # Fail2ban
+        if pargs.fail2ban and WOAptGet.is_installed(self.controller, 'fail2ban'):
+            Log.debug(self.controller, "Remove apt_packages variable of Fail2ban")
+            self.apt_packages.extend(WOVar.wo_fail2ban)
+
+        # ClamAV
+        if pargs.clamav and WOAptGet.is_installed(self.controller, 'clamav'):
+            Log.debug(self.controller, "Setting apt_packages variable for ClamAV")
+            self.apt_packages.extend(WOVar.wo_clamav)
+
+        # Sendmail
+        if pargs.sendmail and WOAptGet.is_installed(self.controller, 'sendmail'):
+            Log.debug(self.controller, "Setting apt_packages variable for Sendmail")
+            self.apt_packages.append("sendmail")
+
+        # ProFTPd
+        if pargs.proftpd and WOAptGet.is_installed(self.controller, 'proftpd-basic'):
+            Log.debug(self.controller, "Remove apt_packages variable for ProFTPd")
+            self.apt_packages.append("proftpd-basic")
+
+        # UFW
+        if pargs.ufw and WOAptGet.is_installed(self.controller, 'ufw'):
+            Log.debug(self.controller, "Remove apt_packages variable for UFW")
+            WOShellExec.cmd_exec(self.controller, 'ufw disable && ufw --force reset')
+
+        # Process file-based packages
+        self._process_file_packages(pargs)
+
+    def _process_php_versions(self, pargs: Any) -> None:
+        """Process PHP version removal."""
+        wo_vars = {
+            'php74': WOVar.wo_php74,
+            'php80': WOVar.wo_php80,
+            'php81': WOVar.wo_php81,
+            'php82': WOVar.wo_php82,
+            'php83': WOVar.wo_php83,
+            'php84': WOVar.wo_php84,
+        }
+
+        for parg_version, version in WOVar.wo_php_versions.items():
+            if getattr(pargs, parg_version, False):
+                Log.debug(self.controller, f"Setting apt_packages variable for PHP {version}")
+
+                if WOAptGet.is_installed(self.controller, f'php{version}-fpm'):
+                    self.apt_packages.extend(wo_vars[parg_version])
+
+                    # Check if other versions are installed
+                    other_versions_installed = any(
+                        WOAptGet.is_installed(self.controller, f'php{other_version}-fpm')
+                        for other_version in WOVar.wo_php_versions.values()
+                        if other_version != version
+                    )
+
+                    if not other_versions_installed:
+                        self.apt_packages.extend(WOVar.wo_php_extra)
+                else:
+                    Log.debug(self.controller, f"PHP {version} is not installed")
+                    Log.info(self.controller, f"PHP {version} is not installed")
+
+    def _process_mysql_removal(self, pargs: Any) -> None:
+        """Process MySQL/MariaDB removal."""
+        if WOAptGet.is_installed(self.controller, 'mariadb-server'):
+            Log.debug(self.controller, "Removing apt_packages variable of MySQL")
+            if self.purge:
+                self.apt_packages.extend(['mariadb-server', 'mysql-common', 'mariadb-client'])
+                self.packages.extend(['/etc/mysql', '/var/lib/mysql'])
+            else:
+                self.apt_packages.extend(WOVar.wo_mysql)
+        elif not self.purge:
+            Log.info(self.controller, "MariaDB is not installed")
+
+    def _process_file_packages(self, pargs: Any) -> None:
+        """Process file-based package removals."""
+        # nanorc
+        if pargs.nanorc and os.path.exists('/usr/share/nano-syntax-highlighting'):
+            Log.debug(self.controller, "Add nano to packages list")
+            self.packages.append("/usr/share/nano-syntax-highlighting")
+
+        # WP-CLI
+        if pargs.wpcli:
+            Log.debug(self.controller, "Removing package variable of WPCLI")
+            for wp_path in ['/usr/local/bin/wp', '/usr/bin/wp']:
+                if os.path.isfile(wp_path):
+                    self.packages.append(wp_path)
+            if WOAptGet.is_installed(self.controller, 'wp-cli'):
+                self.apt_packages.append('wp-cli')
+
+        # phpMyAdmin
+        if pargs.phpmyadmin:
+            pma_path = f'{WOVar.wo_webroot}22222/htdocs/db/pma'
+            if os.path.isdir(pma_path):
+                Log.debug(self.controller, "Removing package of phpMyAdmin")
+                self.packages.append(pma_path)
+
+        # Composer
+        if pargs.composer and os.path.isfile('/usr/local/bin/composer'):
+            Log.debug(self.controller, "Removing package of Composer")
+            self.packages.append('/usr/local/bin/composer')
+
+        # MySQLTuner
+        if pargs.mysqltuner and os.path.isfile('/usr/bin/mysqltuner'):
+            Log.debug(self.controller, "Removing packages for MySQLTuner")
+            self.packages.append('/usr/bin/mysqltuner')
+
+        # cheat.sh
+        if pargs.cheat and os.path.isfile('/usr/local/bin/cht.sh'):
+            Log.debug(self.controller, "Removing packages for cheat.sh")
+            self.packages.extend([
+                '/usr/local/bin/cht.sh',
+                '/usr/local/bin/cheat',
+                '/etc/bash_completion.d/cht.sh'
+            ])
+
+        # phpRedisAdmin
+        if pargs.phpredisadmin:
+            redis_path = f'{WOVar.wo_webroot}22222/htdocs/cache/redis'
+            if os.path.isdir(redis_path):
+                Log.debug(self.controller, "Removing package variable of phpRedisAdmin")
+                self.packages.append(redis_path)
+
+        # Adminer
+        if pargs.adminer:
+            adminer_path = f'{WOVar.wo_webroot}22222/htdocs/db/adminer'
+            if os.path.isdir(adminer_path):
+                Log.debug(self.controller, "Removing package variable of Adminer")
+                self.packages.append(adminer_path)
+
+        # Utils
+        if pargs.utils:
+            Log.debug(self.controller, "Removing package variable of utils")
+            self.packages.extend([
+                f'{WOVar.wo_webroot}22222/htdocs/php/webgrind/',
+                f'{WOVar.wo_webroot}22222/htdocs/cache/opcache',
+                f'{WOVar.wo_webroot}22222/htdocs/cache/nginx/clean.php',
+                '/usr/bin/pt-query-advisor',
+                f'{WOVar.wo_webroot}22222/htdocs/db/anemometer'
+            ])
+
+        # Netdata
+        if pargs.netdata and (os.path.exists('/opt/netdata') or os.path.exists('/etc/netdata')):
+            Log.debug(self.controller, "Removing Netdata")
+            self.packages.append('/var/lib/wo/tmp/kickstart.sh')
+
+        # WordOps Dashboard
+        if pargs.dashboard:
+            dashboard_index = f'{WOVar.wo_webroot}22222/htdocs/index.php'
+            dashboard_html = f'{WOVar.wo_webroot}22222/htdocs/index.html'
+            if os.path.isfile(dashboard_index) or os.path.isfile(dashboard_html):
+                Log.debug(self.controller, "Removing Wo-Dashboard")
+                self.packages.extend([
+                    f'{WOVar.wo_webroot}22222/htdocs/assets',
+                    dashboard_index,
+                    dashboard_html
+                ])
+
+        # ngxblocker
+        if pargs.ngxblocker and os.path.isfile('/usr/local/sbin/setup-ngxblocker'):
+            self.packages.extend([
+                '/usr/local/sbin/setup-ngxblocker',
+                '/usr/local/sbin/install-ngxblocker',
+                '/usr/local/sbin/update-ngxblocker',
+                '/etc/nginx/conf.d/globalblacklist.conf',
+                '/etc/nginx/conf.d/botblocker-nginx-settings.conf',
+                '/etc/nginx/bots.d'
+            ])
+
+    def execute_removal(self, pargs: Any) -> None:
+        """Execute the removal/purge operation.
+
+        Args:
+            pargs: Parsed command-line arguments
+        """
+        apt_packages, packages = self._get_packages_for_removal(pargs)
+
+        if not apt_packages and not packages:
+            return
+
+        # Confirm with user
+        if not pargs.force:
+            if self.purge:
+                prompt = ('Are you sure you to want to purge stacks from this server?\n'
+                         'Package configuration and data will not remain on this server '
+                         'after this operation.\nPurge stacks [y/N]')
+            else:
+                prompt = ('Are you sure you to want to remove from server.\n'
+                         'Package configuration will remain on server after this operation.\n'
+                         'Remove stacks [y/N]?')
+
+            user_input = input(prompt)
+            if user_input not in ["Y", "y"]:
+                Log.error(self.controller, f"Not starting stack {'purge' if self.purge else 'removal'}")
+
+        # Stop services before removal
+        self._stop_services(apt_packages)
+
+        # Handle Netdata uninstaller
+        if '/var/lib/wo/tmp/kickstart.sh' in packages:
+            self._uninstall_netdata(packages)
+
+        # Remove packages
+        if packages:
+            action = "Purging Packages" if self.purge else "Removing packages"
+            Log.wait(self.controller, f"{action}            ")
+            WOFileUtils.remove(self.controller, packages)
+            Log.valide(self.controller, f"{action}            ")
+
+            # Handle nanorc cleanup
+            if '/usr/share/nano-syntax-highlighting' in packages:
+                self._cleanup_nanorc()
+
+        # Remove APT packages
+        if apt_packages:
+            action = "Purging APT Packages" if self.purge else "Removing APT packages"
+            Log.debug(self.controller, f"{action}")
+            Log.wait(self.controller, f"{action}       ")
+            WOAptGet.remove(self.controller, apt_packages, purge=self.purge)
+            WOAptGet.auto_remove(self.controller)
+            Log.valide(self.controller, f"{action}       ")
+
+        action = "purged" if self.purge else "removed"
+        Log.info(self.controller, f"Successfully {action} packages")
+
+    def _stop_services(self, apt_packages: List[str]) -> None:
+        """Stop services before removal.
+
+        Args:
+            apt_packages: List of APT packages being removed
+        """
+        if 'nginx-custom' in apt_packages:
+            WOService.stop_service(self.controller, 'nginx')
+
+        if 'fail2ban' in apt_packages:
+            WOService.stop_service(self.controller, 'fail2ban')
+
+        if 'mariadb-server' in apt_packages:
+            if self.purge and self.controller.app.config.has_section('mysql'):
+                if self.controller.app.config.get('mysql', 'grant-host') == 'localhost':
+                    WOMysql.backupAll(self.controller)
+            else:
+                WOMysql.backupAll(self.controller)
+            WOService.stop_service(self.controller, 'mysql')
+
+        # Stop PHP-FPM services
+        for version in WOVar.wo_php_versions.values():
+            service = f'php{version}-fpm'
+            if service in apt_packages:
+                WOService.stop_service(self.controller, service)
+                WOService.stop_service(self.controller, f'{service}@22222')
+
+    def _uninstall_netdata(self, packages: List[str]) -> None:
+        """Uninstall Netdata using its uninstaller script.
+
+        Args:
+            packages: List to append netdata directories to
+        """
+        uninstaller_paths = [
+            '/usr/libexec/netdata/netdata-uninstaller.sh',
+            '/opt/netdata/usr/libexec/netdata/netdata-uninstaller.sh'
+        ]
+
+        for idx, path in enumerate(uninstaller_paths):
+            if os.path.exists(path):
+                location = "/etc/netdata" if idx == 0 else "/opt/netdata"
+                Log.debug(self.controller, f"Uninstalling Netdata from {location}")
+
+                cmd = f"bash {path} -y -f"
+                errormsg = '' if idx == 0 else None
+                log = False if idx == 0 else True
+
+                WOShellExec.cmd_exec(self.controller, cmd, errormsg=errormsg, log=log)
+                packages.append(location)
+                break
+        else:
+            Log.debug(self.controller, "Netdata uninstaller not found")
+
+        # Remove netdata MySQL user
+        if WOMysql.mariadb_ping(self.controller):
+            WOMysql.execute(self.controller, "DELETE FROM mysql.user WHERE User = 'netdata';")
+
+    def _cleanup_nanorc(self) -> None:
+        """Clean up nanorc configuration."""
+        WOShellExec.cmd_exec(
+            self.controller,
+            'grep -v "nano-syntax-highlighting" /etc/nanorc > /etc/nanorc.new'
+        )
+        WOFileUtils.rm(self.controller, '/etc/nanorc')
+        WOFileUtils.mvfile(self.controller, '/etc/nanorc.new', '/etc/nanorc')
+
+
 class WOStackController(CementBaseController):
+    """Main controller for stack operations."""
+
     class Meta:
         label = 'stack'
         stacked_on = 'base'
@@ -99,6 +909,8 @@ class WOStackController(CementBaseController):
                 dict(help='Force install/remove/purge without prompt',
                      action='store_true')),
         ]
+
+        # Dynamically add PHP version arguments
         for php_version, php_number in WOVar.wo_php_versions.items():
             arguments.append(([f'--{php_version}'],
                               dict(help=f'Install PHP {php_number} stack',
@@ -107,444 +919,233 @@ class WOStackController(CementBaseController):
         usage = "wo stack (command) [options]"
 
     @expose(hide=True)
-    def default(self):
-        """default action of wo stack command"""
+    def default(self) -> None:
+        """Default action of wo stack command."""
         self.app.args.print_help()
 
+    def _process_install_arguments(self, pargs: Any) -> None:
+        """Process and expand installation arguments.
+
+        Args:
+            pargs: Parsed command-line arguments
+        """
+        # Default action for stack installation
+        if all(value is None or value is False for value in vars(pargs).values()):
+            pargs.web = True
+            pargs.admin = True
+            pargs.fail2ban = True
+
+        if pargs.mariadb:
+            pargs.mysql = True
+
+        # Handle --all flag
+        if pargs.all:
+            pargs.web = True
+            pargs.admin = True
+            for version_key in WOVar.wo_php_versions.keys():
+                setattr(pargs, version_key, True)
+            pargs.redis = True
+            pargs.proftpd = True
+
+        # Handle --web stack
+        if pargs.web:
+            pargs.php = True
+            pargs.nginx = True
+            pargs.mysql = True
+            pargs.wpcli = True
+            pargs.sendmail = True
+
+        # Handle --admin stack
+        if pargs.admin:
+            pargs.web = True
+            pargs.adminer = True
+            pargs.phpmyadmin = True
+            pargs.composer = True
+            pargs.utils = True
+            pargs.netdata = True
+            pargs.dashboard = True
+            pargs.phpredisadmin = True
+            pargs.extplorer = True
+            pargs.cheat = True
+            pargs.nanorc = True
+
+        # Handle --security stack
+        if pargs.security:
+            pargs.fail2ban = True
+            pargs.clamav = True
+            pargs.ngxblocker = True
+
+        # Handle --php flag (install default PHP version)
+        if pargs.php:
+            if self.app.config.has_section('php'):
+                config_php_ver = self.app.config.get('php', 'version')
+                current_php = config_php_ver.replace(".", "")
+                setattr(pargs, f'php{current_php}', True)
+
+    def _check_php_installed(self) -> bool:
+        """Check if any PHP version is installed.
+
+        Returns:
+            True if any PHP version is installed, False otherwise
+        """
+        return any(
+            WOAptGet.is_installed(self, f'php{version}-fpm')
+            for version in WOVar.wo_php_versions.values()
+        )
+
     @expose(help="Install packages")
-    def install(self, packages=[], apt_packages=[], disp_msg=True):
-        """Start installation of packages"""
+    def install(self, packages: Optional[List[List[str]]] = None,
+                apt_packages: Optional[List[str]] = None,
+                disp_msg: bool = True) -> int:
+        """Start installation of packages.
+
+        Args:
+            packages: List of download packages [url, dest, name]
+            apt_packages: List of APT package names
+            disp_msg: Whether to display messages
+
+        Returns:
+            0 on success, self.msg list if disp_msg is False
+        """
+        if packages is None:
+            packages = []
+        if apt_packages is None:
+            apt_packages = []
+
         self.msg = []
         pargs = self.app.pargs
 
         try:
-            # Default action for stack installation
-            if all(value is None or value is False for value in vars(pargs).values()):
-                pargs.web = True
-                pargs.admin = True
-                pargs.fail2ban = True
+            # Process arguments
+            self._process_install_arguments(pargs)
 
-            if pargs.mariadb:
-                pargs.mysql = True
+            # Create package manager and installer
+            pkg_manager = PackageManager(self)
+            pkg_manager.apt_packages = apt_packages
+            pkg_manager.packages = packages
 
-            if pargs.all:
-                pargs.web = True
-                pargs.admin = True
-                pargs.php74 = True
-                pargs.php80 = True
-                pargs.php81 = True
-                pargs.php82 = True
-                pargs.php83 = True
-                pargs.php84 = True
-                pargs.redis = True
-                pargs.proftpd = True
+            installer = StackComponentInstaller(self, pkg_manager)
 
-            if pargs.web:
-                pargs.php = True
-                pargs.nginx = True
-                pargs.mysql = True
-                pargs.wpcli = True
-                pargs.sendmail = True
-
-            if pargs.admin:
-                pargs.web = True
-                pargs.adminer = True
-                pargs.phpmyadmin = True
-                pargs.composer = True
-                pargs.utils = True
-                pargs.netdata = True
-                pargs.dashboard = True
-                pargs.phpredisadmin = True
-                pargs.extplorer = True
-                pargs.cheat = True
-                pargs.nanorc = True
-
-            if pargs.security:
-                pargs.fail2ban = True
-                pargs.clamav = True
-                pargs.ngxblocker = True
-
-            if pargs.php:
-                if self.app.config.has_section('php'):
-                    config_php_ver = self.app.config.get(
-                        'php', 'version')
-                    current_php = config_php_ver.replace(".", "")
-                    setattr(self.app.pargs, 'php{0}'.format(current_php), True)
-
-            # Nginx
+            # Install components based on arguments
             if pargs.nginx:
-                Log.debug(self, "Setting apt_packages variable for Nginx")
-                if not WOAptGet.is_exec(self, 'nginx'):
-                    apt_packages = apt_packages + WOVar.wo_nginx
-                else:
-                    Log.debug(self, "Nginx already installed")
+                installer.install_nginx()
 
-            # Redis
             if pargs.redis:
-                if not WOAptGet.is_installed(self, 'redis-server'):
-                    apt_packages = apt_packages + WOVar.wo_redis
+                installer.install_redis()
 
-                else:
-                    Log.debug(self, "Redis already installed")
-
-            wo_vars = {
-                'php74': WOVar.wo_php74,
-                'php80': WOVar.wo_php80,
-                'php81': WOVar.wo_php81,
-                'php82': WOVar.wo_php82,
-                'php83': WOVar.wo_php83,
-                'php84': WOVar.wo_php84,
-            }
-
+            # Install PHP versions
             for parg_version, version in WOVar.wo_php_versions.items():
                 if getattr(pargs, parg_version, False):
-                    Log.debug(self, f"Setting apt_packages variable for PHP {version}")
-                    if not WOAptGet.is_installed(self, f'php{version}-fpm'):
-                        apt_packages = apt_packages + wo_vars[parg_version] + WOVar.wo_php_extra
-                    else:
-                        Log.debug(self, f"PHP {version} already installed")
-                        Log.info(self, f"PHP {version} already installed")
+                    installer.install_php_version(parg_version, version)
 
-            # MariaDB
+            # MySQL/MariaDB
             if pargs.mysql:
                 pargs.mysqltuner = True
-                Log.debug(self, "Setting apt_packages variable for MySQL")
-                if not WOMysql.mariadb_ping(self):
-                    apt_packages = apt_packages + WOVar.wo_mysql
-                else:
-                    Log.debug(self, "MySQL already installed and alive")
-                    Log.info(self, "MySQL already installed and alive")
+                installer.install_mysql()
 
-            # mysqlclient
             if pargs.mysqlclient:
-                Log.debug(self, "Setting apt_packages variable "
-                          "for MySQL Client")
-                if not WOMysql.mariadb_ping(self):
-                    apt_packages = apt_packages + WOVar.wo_mysql_client
-                else:
-                    Log.debug(self, "MySQL already installed and alive")
-                    Log.info(self, "MySQL already installed and alive")
+                installer.install_mysql_client()
 
-            # WP-CLI
+            # Other components
             if pargs.wpcli:
-                Log.debug(self, "Setting packages variable for WP-CLI")
-                if not WOAptGet.is_exec(self, 'wp'):
-                    packages = packages + [[f"{WOVar.wpcli_url}",
-                                            "/usr/local/bin/wp",
-                                            "WP-CLI"]]
-                else:
-                    Log.debug(self, "WP-CLI is already installed")
-                    Log.info(self, "WP-CLI is already installed")
+                installer.install_wpcli()
 
-            # fail2ban
             if pargs.fail2ban:
-                Log.debug(self, "Setting apt_packages variable for Fail2ban")
-                if not WOAptGet.is_installed(self, 'fail2ban'):
-                    apt_packages = apt_packages + WOVar.wo_fail2ban
-                else:
-                    Log.debug(self, "Fail2ban already installed")
-                    Log.info(self, "Fail2ban already installed")
+                installer.install_fail2ban()
 
-            # ClamAV
             if pargs.clamav:
-                Log.debug(self, "Setting apt_packages variable for ClamAV")
-                if not WOAptGet.is_installed(self, 'clamav'):
-                    apt_packages = apt_packages + WOVar.wo_clamav
-                else:
-                    Log.debug(self, "ClamAV already installed")
-                    Log.info(self, "ClamAV already installed")
+                installer.install_clamav()
 
-            # UFW
             if pargs.ufw:
-                Log.debug(self, "Setting apt_packages variable for UFW")
-                apt_packages = apt_packages + ["ufw"]
+                installer.install_ufw()
 
-            # sendmail
             if pargs.sendmail:
-                Log.debug(self, "Setting apt_packages variable for Sendmail")
-                if (not WOAptGet.is_installed(self, 'sendmail') and
-                        not WOAptGet.is_installed(self, 'postfix')):
-                    apt_packages = apt_packages + ["sendmail"]
-                else:
-                    if WOAptGet.is_installed(self, 'sendmail'):
-                        Log.debug(self, "Sendmail already installed")
-                        Log.info(self, "Sendmail already installed")
-                    else:
-                        Log.debug(
-                            self, "Another mta (Postfix) is already installed")
-                        Log.info(
-                            self, "Another mta (Postfix) is already installed")
+                installer.install_sendmail()
 
-            # proftpd
             if pargs.proftpd:
-                Log.debug(self, "Setting apt_packages variable for ProFTPd")
-                if not WOAptGet.is_installed(self, 'proftpd-basic'):
-                    apt_packages = apt_packages + ["proftpd-basic"]
-                else:
-                    Log.debug(self, "ProFTPd already installed")
-                    Log.info(self, "ProFTPd already installed")
+                installer.install_proftpd()
 
-            # brotli
+            # Brotli compression
             if pargs.brotli:
-                Log.wait(self, "Enabling Brotli")
-                WOGit.add(self, ["/etc/nginx"], msg="Commiting pending changes")
-                if os.path.exists('/etc/nginx/conf.d/brotli.conf.disabled'):
-                    WOFileUtils.mvfile(self, '/etc/nginx/conf.d/brotli.conf.disabled',
-                                       '/etc/nginx/conf.d/brotli.conf')
-                else:
-                    Log.failed(self, "Enabling Brotli")
-                    Log.error(self, "Brotli is already enabled")
-                if os.path.exists('/etc/nginx/conf.d/gzip.conf'):
-                    WOFileUtils.mvfile(self, '/etc/nginx/conf.d/gzip.conf',
-                                       '/etc/nginx/conf.d/gzip.conf.disabled')
-                if check_config(self):
-                    Log.valide(self, "Enabling Brotli")
-                    WOGit.add(self, ["/etc/nginx"], msg="Enabling Brotli")
-                    WOService.reload_service(self, "nginx")
-                else:
-                    Log.failed(self, "Enabling Brotli")
-                    WOGit.rollback(self, ["/etc/nginx"])
+                BrotliManager.enable(self)
 
-            # PHPMYADMIN
+            # Admin tools
             if pargs.phpmyadmin:
                 pargs.composer = True
-                if not os.path.isdir('/var/www/22222/htdocs/db/pma'):
-                    Log.debug(self, "Setting packages variable "
-                              "for phpMyAdmin ")
-                    packages = packages + [[
-                        "https://www.phpmyadmin.net/"
-                        "downloads/phpMyAdmin-latest-all-languages.tar.gz",
-                        "/var/lib/wo/tmp/pma.tar.gz",
-                        "PHPMyAdmin"]]
-                else:
-                    Log.debug(self, "phpMyAdmin already installed")
-                    Log.info(self, "phpMyAdmin already installed")
+                installer.install_phpmyadmin()
 
-            # PHPREDISADMIN
             if pargs.phpredisadmin:
                 pargs.composer = True
-                if not os.path.isdir('/var/www/22222/htdocs/'
-                                     'cache/redis/phpRedisAdmin'):
-                    Log.debug(
-                        self, "Setting packages variable for phpRedisAdmin")
-                    packages = packages + [["https://github.com/"
-                                            "erikdubbelboer/"
-                                            "phpRedisAdmin/archive"
-                                            "/v1.11.3.tar.gz",
-                                            "/var/lib/wo/tmp/pra.tar.gz",
-                                            "phpRedisAdmin"]]
-                else:
-                    Log.debug(self, "phpRedisAdmin already installed")
-                    Log.info(self, "phpRedisAdmin already installed")
+                installer.install_phpredisadmin()
 
-            # Composer
             if pargs.composer:
                 if not WOAptGet.is_exec(self, 'php'):
                     pargs.php = True
-                if not WOAptGet.is_exec(self, 'composer'):
-                    Log.debug(self, "Setting packages variable for Composer ")
-                    packages = packages + [["https://getcomposer.org/"
-                                            "installer",
-                                            "/var/lib/wo/tmp/composer-install",
-                                            "Composer"]]
-                else:
-                    Log.debug(self, "Composer already installed")
-                    Log.info(self, "Composer already installed")
+                installer.install_composer()
 
-            # ADMINER
             if pargs.adminer:
-                if not os.path.isfile("{0}22222/htdocs/db/"
-                                      "adminer/index.php"
-                                      .format(WOVar.wo_webroot)):
-                    Log.debug(self, "Setting packages variable for Adminer ")
-                    packages = packages + [[
-                        "https://www.adminer.org/latest.php",
-                        "{0}22222/"
-                        "htdocs/db/adminer/index.php"
-                        .format(WOVar.wo_webroot),
-                        "Adminer"],
-                        ["https://raw.githubusercontent.com"
-                         "/vrana/adminer/master/designs/"
-                         "pepa-linha/adminer.css",
-                         "{0}22222/"
-                         "htdocs/db/adminer/adminer.css"
-                         .format(WOVar.wo_webroot),
-                         "Adminer theme"]]
-                else:
-                    Log.debug(self, "Adminer already installed")
-                    Log.info(self, "Adminer already installed")
+                installer.install_adminer()
 
-            # mysqltuner
             if pargs.mysqltuner:
-                if not os.path.isfile("/usr/bin/mysqltuner"):
-                    Log.debug(self, "Setting packages variable "
-                              "for MySQLTuner ")
-                    packages = packages + [["https://raw."
-                                            "githubusercontent.com/"
-                                            "major/MySQLTuner-perl"
-                                            "/master/mysqltuner.pl",
-                                            "/usr/bin/mysqltuner",
-                                            "MySQLTuner"]]
-                else:
-                    Log.debug(self, "MySQLtuner already installed")
-                    Log.info(self, "MySQLtuner already installed")
+                installer.install_mysqltuner()
 
-            # Netdata
             if pargs.netdata:
-                if (not os.path.isdir('/opt/netdata') and not
-                        os.path.isdir("/etc/netdata")):
-                    Log.debug(
-                        self, "Setting packages variable for Netdata")
-                    packages = packages + [[f"{WOVar.netdata_script_url}",
-                                            '/var/lib/wo/tmp/kickstart.sh',
-                                            'Netdata']]
-                else:
-                    Log.debug(self, "Netdata already installed")
-                    Log.info(self, "Netdata already installed")
+                installer.install_netdata()
 
-            # WordOps Dashboard
             if pargs.dashboard:
-                if not os.path.isfile('/var/www/22222/htdocs/index.php'):
-                    Log.debug(self,
-                              "Setting packages variable for WO-Dashboard")
-                    packages = packages + [[
-                        "https://github.com/WordOps"
-                        "/wordops-dashboard/"
-                        "releases/download/v{0}/"
-                        "wordops-dashboard.tar.gz"
-                        .format(WOVar.wo_dashboard),
-                        "/var/lib/wo/tmp/wo-dashboard.tar.gz",
-                        "WordOps Dashboard"]]
-                else:
-                    Log.debug(self, "WordOps dashboard already installed")
-                    Log.info(self, "WordOps dashboard already installed")
+                installer.install_dashboard()
 
-            # eXtplorer
             if pargs.extplorer:
-                if not os.path.isdir('/var/www/22222/htdocs/files'):
-                    Log.debug(self, "Setting packages variable for eXtplorer")
-                    packages = packages + \
-                        [["https://github.com/soerennb/"
-                          "extplorer/archive/v{0}.tar.gz"
-                          .format(WOVar.wo_extplorer),
-                          "/var/lib/wo/tmp/extplorer.tar.gz",
-                          "eXtplorer"]]
-                else:
-                    Log.debug(self, "eXtplorer is already installed")
-                    Log.info(self, "eXtplorer is already installed")
+                installer.install_extplorer()
 
-            # ultimate ngx_blocker
             if pargs.ngxblocker:
                 if not WOAptGet.is_exec(self, 'nginx'):
                     pargs.nginx = True
-                if not os.path.isdir('/etc/nginx/bots.d'):
-                    Log.debug(self, "Setting packages variable for ngxblocker")
-                    packages = packages + \
-                        [["https://raw.githubusercontent.com/"
-                          "mitchellkrogza/nginx-ultimate-bad-bot-blocker"
-                          "/master/install-ngxblocker",
-                          "/usr/local/sbin/install-ngxblocker",
-                          "ngxblocker"]]
-                else:
-                    Log.debug(self, "ngxblocker is already installed")
-                    Log.info(self, "ngxblocker is already installed")
+                installer.install_ngxblocker()
 
-            # cheat.sh
             if pargs.cheat:
-                if ((not os.path.exists('/usr/local/bin/cht.sh')) and
-                        (not os.path.exists('/usr/bin/cht.sh'))):
-                    Log.debug(self, 'Setting packages variable for cheat.sh')
-                    packages = packages + [[
-                        "https://raw.githubusercontent.com/chubin/cheat.sh"
-                        "/master/share/cht.sh.txt",
-                        "/usr/local/bin/cht.sh",
-                        "cheat.sh"],
-                        ["https://raw.githubusercontent.com/chubin/cheat.sh"
-                         "/master/share/bash_completion.txt",
-                         "/etc/bash_completion.d/cht.sh",
-                         "bash_completion"]]
+                installer.install_cheat()
 
             if pargs.nanorc:
-                if not os.path.exists('/usr/share/nano-syntax-highlighting'):
-                    Log.debug(self, "Setting packages variable for nanorc")
-                    apt_packages = apt_packages + ['nano']
+                installer.install_nanorc()
 
-            # UTILS
+            # Utils
             if pargs.utils:
                 if not WOMysql.mariadb_ping(self):
                     pargs.mysql = True
-                if not (WOAptGet.is_installed(self, 'php7.2-fpm') or
-                        WOAptGet.is_installed(self, 'php7.3-fpm') or
-                        WOAptGet.is_installed(self, 'php7.4-fpm') or
-                        WOAptGet.is_installed(self, 'php8.0-fpm') or
-                        WOAptGet.is_installed(self, 'php8.1-fpm') or
-                        WOAptGet.is_installed(self, 'php8.2-fpm') or
-                        WOAptGet.is_installed(self, 'php8.3-fpm') or
-                        WOAptGet.is_installed(self, 'php8.4-fpm')):
+                if not self._check_php_installed():
                     pargs.php = True
-                Log.debug(self, "Setting packages variable for utils")
-                packages = packages + [[
-                    "https://raw.githubusercontent.com"
-                    "/rtCamp/eeadmin/master/cache/nginx/"
-                    "clean.php",
-                    "{0}22222/htdocs/cache/nginx/clean.php"
-                    .format(WOVar.wo_webroot),
-                    "clean.php"],
-                    ["https://raw.github.com/rlerdorf/"
-                     "opcache-status/master/opcache.php",
-                     "{0}22222/htdocs/cache/opcache/opcache.php"
-                     .format(WOVar.wo_webroot),
-                     "opcache.php"],
-                    ["https://raw.github.com/amnuts/"
-                     "opcache-gui/master/index.php",
-                     "{0}22222/htdocs/cache/opcache/opgui.php"
-                     .format(WOVar.wo_webroot),
-                     "Opgui"],
-                    ["https://raw.githubusercontent.com/"
-                     "mlazarov/ocp/master/ocp.php",
-                     "{0}22222/htdocs/cache/opcache/ocp.php"
-                     .format(WOVar.wo_webroot),
-                     "OCP.php"],
-                    ["https://github.com/jokkedk/webgrind/"
-                     "archive/master.tar.gz",
-                     '/var/lib/wo/tmp/webgrind.tar.gz',
-                     'Webgrind'],
-                    ["https://www.percona.com/"
-                     "get/pt-query-digest",
-                     "/usr/bin/pt-query-advisor",
-                     "pt-query-advisor"]]
+                installer.install_utils()
 
         except Exception as e:
-            Log.debug(self, "{0}".format(e))
+            Log.debug(self, f"Error during package preparation: {e}")
+            raise
 
-        if (apt_packages) or (packages):
+        # Install packages
+        if pkg_manager.apt_packages or pkg_manager.packages:
             pre_stack(self)
-            if (apt_packages):
+
+            if pkg_manager.apt_packages:
                 Log.debug(self, "Calling pre_pref")
-                pre_pref(self, apt_packages)
-                # meminfo = (os.popen('/bin/cat /proc/meminfo '
-                #                    '| grep MemTotal').read()).split(":")
-                # memsplit = re.split(" kB", meminfo[1])
-                # wo_mem = int(memsplit[0])
-                # if (wo_mem < 4000000):
-                #    WOSwap.add(self)
+                pre_pref(self, pkg_manager.apt_packages)
                 Log.wait(self, "Updating apt-cache          ")
                 WOAptGet.update(self)
                 Log.valide(self, "Updating apt-cache          ")
                 Log.wait(self, "Installing APT packages     ")
-                WOAptGet.install(self, apt_packages)
+                WOAptGet.install(self, pkg_manager.apt_packages)
                 Log.valide(self, "Installing APT packages     ")
-                post_pref(self, apt_packages, [])
-            if (packages):
-                Log.debug(self, "Downloading following: {0}".format(packages))
-                WODownload.download(self, packages)
+                post_pref(self, pkg_manager.apt_packages, [])
+
+            if pkg_manager.packages:
+                Log.debug(self, f"Downloading following: {pkg_manager.packages}")
+                WODownload.download(self, pkg_manager.packages)
                 Log.debug(self, "Calling post_pref")
                 Log.wait(self, "Configuring packages")
-                post_pref(self, [], packages)
+                post_pref(self, [], pkg_manager.packages)
                 Log.valide(self, "Configuring packages")
 
             if disp_msg:
-                if (self.msg):
+                if self.msg:
                     for msg in self.msg:
                         Log.info(self, Log.ENDC + msg)
                 Log.info(self, "Successfully installed packages")
@@ -553,654 +1154,50 @@ class WOStackController(CementBaseController):
         return 0
 
     @expose(help="Remove packages")
-    def remove(self):
-        """Start removal of packages"""
-        apt_packages = []
-        packages = []
+    def remove(self) -> None:
+        """Start removal of packages."""
         pargs = self.app.pargs
+
+        # Check if any arguments provided
         if all(value is None or value is False for value in vars(pargs).values()):
             self.app.args.print_help()
+            return
 
-        if pargs.php:
-            if self.app.config.has_section('php'):
-                config_php_ver = self.app.config.get(
-                    'php', 'version')
-                current_php = config_php_ver.replace(".", "")
-                setattr(self.app.pargs, 'php{0}'.format(current_php), True)
-
-        if pargs.mariadb:
-            pargs.mysql = True
-
-        if pargs.all:
-            pargs.web = True
-            pargs.admin = True
-            pargs.php73 = True
-            pargs.php74 = True
-            pargs.php80 = True
-            pargs.php81 = True
-            pargs.php82 = True
-            pargs.php83 = True
-            pargs.php84 = True
-            pargs.fail2ban = True
-            pargs.proftpd = True
-            pargs.utils = True
-            pargs.redis = True
-            pargs.security = True
-            pargs.nanorc = True
-            packages = packages + ['/var/www/22222/htdocs']
-
-        if pargs.web:
-            pargs.nginx = True
-            pargs.php = True
-            pargs.mysql = True
-            pargs.wpcli = True
-            pargs.sendmail = True
-
-        if pargs.admin:
-            pargs.composer = True
-            pargs.utils = True
-            pargs.netdata = True
-            pargs.mysqltuner = True
-            pargs.cheat = True
-
-        if pargs.security:
-            pargs.fail2ban = True
-            pargs.clamav = True
-            pargs.ufw = True
-            pargs.ngxblocker = True
-
-        # NGINX
-        if pargs.nginx:
-            if WOAptGet.is_installed(self, 'nginx-custom'):
-                Log.debug(self, "Removing apt_packages variable of Nginx")
-                apt_packages = apt_packages + WOVar.wo_nginx
-
-        # Create a dictionary that maps PHP versions to corresponding variables.
-        wo_vars = {
-            'php74': WOVar.wo_php74,
-            'php80': WOVar.wo_php80,
-            'php81': WOVar.wo_php81,
-            'php82': WOVar.wo_php82,
-            'php83': WOVar.wo_php83,
-            'php84': WOVar.wo_php84,
-        }
-
-        # Loop through all versions.
-        for parg_version, version in WOVar.wo_php_versions.items():
-            # Check if this version is present in pargs.
-            if getattr(pargs, parg_version):
-                Log.debug(self, f"Setting apt_packages variable for PHP {version}")
-
-                if WOAptGet.is_installed(self, f'php{version}-fpm'):
-                    apt_packages += wo_vars[parg_version]
-
-                    # Check if other versions are installed.
-                    if not any(WOAptGet.is_installed(self, f'php{other_version}-fpm') for
-                               other_version in WOVar.wo_php_versions.values() if other_version != version):
-                        apt_packages += WOVar.wo_php_extra
-
-                else:
-                    Log.debug(self, f"PHP {version} is not installed")
-                    Log.info(self, f"PHP {version} is not installed")
-
-        # REDIS
-        if pargs.redis:
-            if WOAptGet.is_installed(self, 'redis-server'):
-                Log.debug(self, "Remove apt_packages variable of Redis")
-                apt_packages = apt_packages + ["redis-server"]
-
-        # MariaDB
-        if pargs.mysql:
-            if WOAptGet.is_installed(self, 'mariadb-server'):
-                Log.debug(self, "Removing apt_packages variable of MySQL")
-                apt_packages = apt_packages + WOVar.wo_mysql
-
-        # mysqlclient
-        if pargs.mysqlclient:
-            Log.debug(self, "Removing apt_packages variable "
-                      "for MySQL Client")
-            if WOMysql.mariadb_ping(self):
-                apt_packages = apt_packages + WOVar.wo_mysql_client
-
-        # fail2ban
-        if pargs.fail2ban:
-            if WOAptGet.is_installed(self, 'fail2ban'):
-                Log.debug(self, "Remove apt_packages variable of Fail2ban")
-                apt_packages = apt_packages + WOVar.wo_fail2ban
-
-        # ClamAV
-        if pargs.clamav:
-            Log.debug(self, "Setting apt_packages variable for ClamAV")
-            if WOAptGet.is_installed(self, 'clamav'):
-                apt_packages = apt_packages + WOVar.wo_clamav
-
-        # sendmail
-        if pargs.sendmail:
-            Log.debug(self, "Setting apt_packages variable for Sendmail")
-            if WOAptGet.is_installed(self, 'sendmail'):
-                apt_packages = apt_packages + ["sendmail"]
-
-        # proftpd
-        if pargs.proftpd:
-            if WOAptGet.is_installed(self, 'proftpd-basic'):
-                Log.debug(self, "Remove apt_packages variable for ProFTPd")
-                apt_packages = apt_packages + ["proftpd-basic"]
-
-        # brotli
+        # Handle Brotli separately
         if pargs.brotli:
-            Log.wait(self, "Disabling Brotli")
-            WOGit.add(self, ["/etc/nginx"], msg="Commiting pending changes")
-            if os.path.exists('/etc/nginx/conf.d/brotli.conf'):
-                WOFileUtils.mvfile(self, '/etc/nginx/conf.d/brotli.conf',
-                                   '/etc/nginx/conf.d/brotli.conf.disabled')
-            else:
-                Log.failed(self, "Disabling Brotli")
-                Log.error(self, "Brotli is already disabled")
-            if os.path.exists('/etc/nginx/conf.d/gzip.conf.disabled'):
-                WOFileUtils.mvfile(self, '/etc/nginx/conf.d/gzip.conf.disabled',
-                                   '/etc/nginx/conf.d/gzip.conf')
-            if check_config(self):
-                Log.valide(self, "Disabling Brotli")
-                WOGit.add(self, ["/etc/nginx"], msg="Disabling Brotli")
-                WOService.reload_service(self, "nginx")
-            else:
-                Log.failed(self, "Disabling Brotli")
-                WOGit.rollback(self, ["/etc/nginx"])
+            BrotliManager.disable(self)
+            return
 
-        # UFW
-        if pargs.ufw:
-            if WOAptGet.is_installed(self, 'ufw'):
-                Log.debug(self, "Remove apt_packages variable for UFW")
-                WOShellExec.cmd_exec(self, 'ufw disable && ufw --force reset')
-
-        # nanorc
-        if pargs.nanorc:
-            if os.path.exists('/usr/share/nano-syntax-highlighting'):
-                Log.debug(self, "Add nano to apt_packages list")
-                packages = packages + \
-                    ["/usr/share/nano-syntax-highlighting"]
-
-        # WPCLI
-        if pargs.wpcli:
-            Log.debug(self, "Removing package variable of WPCLI ")
-            for wp_path in ['/usr/local/bin/wp', '/usr/bin/wp']:
-                if os.path.isfile(wp_path):
-                    packages.append(wp_path)
-            if WOAptGet.is_installed(self, 'wp-cli'):
-                apt_packages.append('wp-cli')
-
-        # PHPMYADMIN
-        if pargs.phpmyadmin:
-            if os.path.isdir('{0}22222/htdocs/db/pma'
-                             .format(WOVar.wo_webroot)):
-                Log.debug(self, "Removing package of phpMyAdmin ")
-                packages = packages + ['{0}22222/htdocs/db/pma'
-                                       .format(WOVar.wo_webroot)]
-        # Composer
-        if pargs.composer:
-            Log.debug(self, "Removing package of Composer ")
-            if os.path.isfile('/usr/local/bin/composer'):
-                packages = packages + ['/usr/local/bin/composer']
-
-        # MySQLTuner
-        if pargs.mysqltuner:
-            if os.path.isfile('/usr/bin/mysqltuner'):
-                Log.debug(self, "Removing packages for MySQLTuner ")
-                packages = packages + ['/usr/bin/mysqltuner']
-
-        # cheat.sh
-        if pargs.cheat:
-            if os.path.isfile('/usr/local/bin/cht.sh'):
-                Log.debug(self, "Removing packages for cheat.sh ")
-                packages = packages + [
-                    '/usr/local/bin/cht.sh', '/usr/local/bin/cheat',
-                    '/etc/bash_completion.d/cht.sh']
-
-        # PHPREDISADMIN
-        if pargs.phpredisadmin:
-            Log.debug(self, "Removing package variable of phpRedisAdmin ")
-            if os.path.isdir('{0}22222/htdocs/cache/redis'
-                             .format(WOVar.wo_webroot)):
-                packages = packages + ['{0}22222/htdocs/'
-                                       'cache/redis'
-                                       .format(WOVar.wo_webroot)]
-        # ADMINER
-        if pargs.adminer:
-            if os.path.isdir('{0}22222/htdocs/db/adminer'
-                             .format(WOVar.wo_webroot)):
-                Log.debug(self, "Removing package variable of Adminer ")
-                packages = packages + ['{0}22222/htdocs/db/adminer'
-                                       .format(WOVar.wo_webroot)]
-        if pargs.utils:
-            Log.debug(self, "Removing package variable of utils ")
-            packages = packages + ['{0}22222/htdocs/php/webgrind/'
-                                   .format(WOVar.wo_webroot),
-                                   '{0}22222/htdocs/cache/opcache'
-                                   .format(WOVar.wo_webroot),
-                                   '{0}22222/htdocs/cache/nginx/'
-                                   'clean.php'.format(WOVar.wo_webroot),
-                                   '/usr/bin/pt-query-advisor',
-                                   '{0}22222/htdocs/db/anemometer'
-                                   .format(WOVar.wo_webroot)]
-
-        # netdata
-        if pargs.netdata:
-            if (os.path.exists('/opt/netdata') or
-                    os.path.exists('/etc/netdata')):
-                Log.debug(self, "Removing Netdata")
-                packages = packages + ['/var/lib/wo/tmp/kickstart.sh']
-
-        # wordops dashboard
-        if pargs.dashboard:
-            if (os.path.isfile('{0}22222/htdocs/index.php'
-                               .format(WOVar.wo_webroot)) or
-                    os.path.isfile('{0}22222/htdocs/index.html'
-                                   .format(WOVar.wo_webroot))):
-                Log.debug(self, "Removing Wo-Dashboard")
-                packages = packages + ['{0}22222/htdocs/assets'
-                                       .format(WOVar.wo_webroot),
-                                       '{0}22222/htdocs/index.php'
-                                       .format(WOVar.wo_webroot),
-                                       '{0}22222/htdocs/index.html'
-                                       .format(WOVar.wo_webroot)]
-        # ngxblocker
-        if pargs.ngxblocker:
-            if os.path.isfile('/usr/local/sbin/setup-ngxblocker'):
-                packages = packages + [
-                    '/usr/local/sbin/setup-ngxblocker',
-                    '/usr/local/sbin/install-ngxblocker',
-                    '/usr/local/sbin/update-ngxblocker',
-                    '/etc/nginx/conf.d/globalblacklist.conf',
-                    '/etc/nginx/conf.d/botblocker-nginx-settings.conf',
-                    '/etc/nginx/bots.d']
-
-        if (packages) or (apt_packages):
-            if (not pargs.force):
-                start_remove = input('Are you sure you to want to'
-                                     ' remove from server.'
-                                     '\nPackage configuration will remain'
-                                     ' on server after this operation.\n'
-                                     'Remove stacks [y/N]?')
-                if start_remove != "Y" and start_remove != "y":
-                    Log.error(self, "Not starting stack removal")
-
-            if 'nginx-custom' in apt_packages:
-                WOService.stop_service(self, 'nginx')
-
-            if 'mariadb-server' in apt_packages:
-                WOMysql.backupAll(self)
-                WOService.stop_service(self, 'mysql')
-
-            for version in WOVar.wo_php_versions.values():
-                service = f'php{version}-fpm'
-                if service in apt_packages:
-                    WOService.stop_service(self, service)
-                    WOService.stop_service(self, f'{service}@22222')
-
-            # Netdata uninstaller
-            if '/var/lib/wo/tmp/kickstart.sh' in packages:
-                if os.path.exists(
-                        '/usr/libexec/netdata/netdata-uninstaller.sh'):
-                    Log.debug(self, "Uninstalling Netdata from /etc/netdata")
-                    WOShellExec.cmd_exec(
-                        self, "bash /usr/libexec/netdata/netdata-"
-                        "uninstaller.sh -y -f",
-                        errormsg='', log=False)
-                    packages = packages + ["/etc/netdata"]
-                elif os.path.exists(
-                    '/opt/netdata/usr/libexec/'
-                        'netdata/netdata-uninstaller.sh'):
-                    Log.debug(self, "Uninstalling Netdata from /opt/netdata")
-                    WOShellExec.cmd_exec(
-                        self, "bash /opt/netdata/usr/libexec/netdata/netdata-"
-                        "uninstaller.sh -y -f")
-                    packages = packages + ["/opt/netdata"]
-                else:
-                    Log.debug(self, "Netdata uninstaller not found")
-                if WOMysql.mariadb_ping(self):
-                    WOMysql.execute(
-                        self, "DELETE FROM mysql.user WHERE User = 'netdata';")
-
-            if (packages):
-                Log.wait(self, "Removing packages           ")
-                WOFileUtils.remove(self, packages)
-                Log.valide(self, "Removing packages           ")
-
-                if '/usr/share/nano-syntax-highlighting' in packages:
-                    # removing include line from nanorc
-                    WOShellExec.cmd_exec(
-                        self, 'grep -v "nano-syntax-highlighting" '
-                        '/etc/nanorc > /etc/nanorc.new')
-                    WOFileUtils.rm(self, '/etc/nanorc')
-                    WOFileUtils.mvfile(
-                        self, '/etc/nanorc.new', '/etc/nanorc')
-
-            if (apt_packages):
-                Log.debug(self, "Removing apt_packages")
-                Log.wait(self, "Removing APT packages       ")
-                WOAptGet.remove(self, apt_packages)
-                WOAptGet.auto_remove(self)
-                Log.valide(self, "Removing APT packages       ")
-
-            Log.info(self, "Successfully removed packages")
+        # Execute removal
+        remover = StackRemover(self, purge=False)
+        remover.execute_removal(pargs)
 
     @expose(help="Purge packages")
-    def purge(self):
-        """Start purging of packages"""
-        apt_packages = []
-        packages = []
+    def purge(self) -> None:
+        """Start purging of packages."""
         pargs = self.app.pargs
-        # Default action for stack purge
+
+        # Check if any arguments provided
         if all(value is None or value is False for value in vars(pargs).values()):
             self.app.args.print_help()
+            return
 
-        if pargs.php:
-            if self.app.config.has_section('php'):
-                config_php_ver = self.app.config.get(
-                    'php', 'version')
-                current_php = config_php_ver.replace(".", "")
-                setattr(self.app.pargs, 'php{0}'.format(current_php), True)
-
-        if pargs.mariadb:
-            pargs.mysql = True
-
-        if pargs.all:
-            pargs.web = True
-            pargs.admin = True
-            pargs.php74 = True
-            pargs.php80 = True
-            pargs.php81 = True
-            pargs.php82 = True
-            pargs.php83 = True
-            pargs.php84 = True
-            pargs.fail2ban = True
-            pargs.proftpd = True
-            pargs.utils = True
-            pargs.redis = True
-            packages = packages + ['/var/www/22222/htdocs']
-
-        if pargs.web:
-            pargs.nginx = True
-            pargs.php = True
-            pargs.mysql = True
-            pargs.wpcli = True
-            pargs.sendmail = True
-
-        if pargs.admin:
-            pargs.utils = True
-            pargs.composer = True
-            pargs.netdata = True
-            pargs.mysqltuner = True
-            pargs.cheat = True
-            packages = packages + ['/var/www/22222/htdocs']
-
-        if pargs.security:
-            pargs.fail2ban = True
-            pargs.clamav = True
-            pargs.ufw = True
-            pargs.ngxblocker = True
-
-        # NGINX
-        if pargs.nginx:
-            if WOAptGet.is_installed(self, 'nginx-custom'):
-                Log.debug(self, "Add Nginx to apt_packages list")
-                apt_packages = apt_packages + WOVar.wo_nginx
-            else:
-                Log.info(self, "Nginx is not installed")
-
-        wo_vars = {
-            'php74': WOVar.wo_php74,
-            'php80': WOVar.wo_php80,
-            'php81': WOVar.wo_php81,
-            'php82': WOVar.wo_php82,
-            'php83': WOVar.wo_php83,
-            'php84': WOVar.wo_php84,
-        }
-
-        for parg_version, version in WOVar.wo_php_versions.items():
-            if getattr(pargs, parg_version, False):
-                Log.debug(self, f"Setting apt_packages variable for PHP {version}")
-                if WOAptGet.is_installed(self, f'php{version}-fpm'):
-                    apt_packages = apt_packages + wo_vars[parg_version]
-                else:
-                    Log.debug(self, f"PHP {version} already purged")
-                    Log.info(self, f"PHP {version} already purged")
-
-        # REDIS
-        if pargs.redis:
-            if WOAptGet.is_installed(self, 'redis-server'):
-                Log.debug(self, "Remove apt_packages variable of Redis")
-                apt_packages = apt_packages + ["redis-server"]
-            else:
-                Log.info(self, "Redis is not installed")
-
-        # MariaDB
-        if pargs.mysql:
-            if WOAptGet.is_installed(self, 'mariadb-server'):
-                Log.debug(self, "Add MySQL to apt_packages list")
-                apt_packages = apt_packages + ['mariadb-server',
-                                               'mysql-common',
-                                               'mariadb-client']
-                packages = packages + ['/etc/mysql', '/var/lib/mysql']
-            else:
-                Log.info(self, "MariaDB is not installed")
-
-        # mysqlclient
-        if pargs.mysqlclient:
-            if WOMysql.mariadb_ping(self):
-                Log.debug(self, "Add MySQL client to apt_packages list")
-                apt_packages = apt_packages + WOVar.wo_mysql_client
-
-        # fail2ban
-        if pargs.fail2ban:
-            if WOAptGet.is_installed(self, 'fail2ban'):
-                Log.debug(self, "Add Fail2ban to apt_packages list")
-                apt_packages = apt_packages + WOVar.wo_fail2ban
-
-        # ClamAV
-        if pargs.clamav:
-            if WOAptGet.is_installed(self, 'clamav'):
-                Log.debug(self, "Add ClamAV to apt_packages list")
-                apt_packages = apt_packages + WOVar.wo_clamav
-
-        # UFW
-        if pargs.ufw:
-            if WOAptGet.is_installed(self, 'ufw'):
-                Log.debug(self, "Add UFW to apt_packages list")
-                WOShellExec.cmd_exec(self, 'ufw disable && ufw --force reset')
-
-        # sendmail
-        if pargs.sendmail:
-            if WOAptGet.is_installed(self, 'sendmail'):
-                Log.debug(self, "Add sendmail to apt_packages list")
-                apt_packages = apt_packages + ["sendmail"]
-
-        # proftpd
-        if pargs.proftpd:
-            if WOAptGet.is_installed(self, 'proftpd-basic'):
-                Log.debug(self, "Add Proftpd to apt_packages list")
-                apt_packages = apt_packages + ["proftpd-basic"]
-
-        # nanorc
-        if pargs.nanorc:
-            if os.path.exists('/usr/share/nano-syntax-highlighting'):
-                Log.debug(self, "Add nano to apt_packages list")
-                packages = packages + \
-                    ["/usr/share/nano-syntax-highlighting"]
-
-        # WP-CLI
-        if pargs.wpcli:
-            Log.debug(self, "Purge package variable WPCLI")
-            for wp_path in ['/usr/local/bin/wp', '/usr/bin/wp']:
-                if os.path.isfile(wp_path):
-                    packages.append(wp_path)
-            if WOAptGet.is_installed(self, 'wp-cli'):
-                apt_packages.append('wp-cli')
-
-        # PHPMYADMIN
-        if pargs.phpmyadmin:
-            if os.path.isdir('{0}22222/htdocs/db/pma'
-                             .format(WOVar.wo_webroot)):
-                Log.debug(self, "Removing package of phpMyAdmin ")
-                packages = packages + ['{0}22222/htdocs/db/pma'
-                                       .format(WOVar.wo_webroot)]
-
-        # Composer
-        if pargs.composer:
-            if os.path.isfile('/usr/local/bin/composer'):
-                Log.debug(self, "Removing package variable of Composer ")
-                packages = packages + ['/usr/local/bin/composer']
-
-        # MySQLTuner
-        if pargs.mysqltuner:
-            if os.path.isfile('/usr/bin/mysqltuner'):
-                Log.debug(self, "Removing packages for MySQLTuner ")
-                packages = packages + ['/usr/bin/mysqltuner']
-
-        # cheat.sh
-        if pargs.cheat:
-            if os.path.isfile('/usr/local/bin/cht.sh'):
-                Log.debug(self, "Removing packages for cheat.sh ")
-                packages = packages + [
-                    '/usr/local/bin/cht.sh', '/usr/local/bin/cheat',
-                    '/etc/bash_completion.d/cht.sh']
-
-        # PHPREDISADMIN
-        if pargs.phpredisadmin:
-            Log.debug(self, "Removing package variable of phpRedisAdmin ")
-            if os.path.isdir('{0}22222/htdocs/cache/redis'
-                             .format(WOVar.wo_webroot)):
-                packages = packages + ['{0}22222/htdocs/'
-                                       'cache/redis'
-                                       .format(WOVar.wo_webroot)]
-        # ADMINER
-        if pargs.adminer:
-            if os.path.isdir('{0}22222/htdocs/db/adminer'
-                             .format(WOVar.wo_webroot)):
-                Log.debug(self, "Removing package variable of Adminer ")
-                packages = packages + ['{0}22222/htdocs/db/adminer'
-                                       .format(WOVar.wo_webroot)]
-        # utils
-        if pargs.utils:
-            Log.debug(self, "Purge package variable utils")
-            packages = packages + ['{0}22222/htdocs/php/webgrind/'
-                                   .format(WOVar.wo_webroot),
-                                   '{0}22222/htdocs/cache/opcache'
-                                   .format(WOVar.wo_webroot),
-                                   '{0}22222/htdocs/cache/nginx/'
-                                   'clean.php'.format(WOVar.wo_webroot),
-                                   '/usr/bin/pt-query-advisor',
-                                   '{0}22222/htdocs/db/anemometer'
-                                   .format(WOVar.wo_webroot)
-                                   ]
-        # netdata
-        if pargs.netdata:
-            if (os.path.exists('/opt/netdata') or
-                    os.path.exists('/etc/netdata')):
-                Log.debug(self, "Removing Netdata")
-                packages = packages + ['/var/lib/wo/tmp/kickstart.sh']
-
-        # wordops dashboard
-        if pargs.dashboard:
-            Log.debug(self, "Removing Wo-Dashboard")
-            packages = packages + ['{0}22222/htdocs/assets/'
-                                   .format(WOVar.wo_webroot),
-                                   '{0}22222/htdocs/index.php'
-                                   .format(WOVar.wo_webroot)]
-
-        # ngxblocker
-        if pargs.ngxblocker:
-            if os.path.isfile('/usr/local/sbin/setup-ngxblocker'):
-                packages = packages + [
-                    '/usr/local/sbin/setup-ngxblocker',
-                    '/usr/local/sbin/install-ngxblocker',
-                    '/usr/local/sbin/update-ngxblocker',
-                    '/etc/nginx/conf.d/globalblacklist.conf',
-                    '/etc/nginx/conf.d/botblocker-nginx-settings.conf',
-                    '/etc/nginx/bots.d']
-
-        if (packages) or (apt_packages):
-            if (not pargs.force):
-                start_purge = input('Are you sure you to want to'
-                                    ' purge stacks from this server ?'
-                                    '\nPackage configuration and data '
-                                    'will not remain'
-                                    ' on this server after this operation.\n'
-                                    'Purge stacks [y/N]')
-                if start_purge != "Y" and start_purge != "y":
-                    Log.error(self, "Not starting stack purge")
-
-            if "nginx-custom" in apt_packages:
-                WOService.stop_service(self, 'nginx')
-
-            if "fail2ban" in apt_packages:
-                WOService.stop_service(self, 'fail2ban')
-
-            if "mariadb-server" in apt_packages:
-                if self.app.config.has_section('mysql'):
-                    if self.app.config.get(
-                            'mysql', 'grant-host') == 'localhost':
-                        WOMysql.backupAll(self)
-                WOService.stop_service(self, 'mysql')
-
-            for version in WOVar.wo_php_versions.values():
-                service = f'php{version}-fpm'
-                if service in apt_packages:
-                    WOService.stop_service(self, service)
-                    WOService.stop_service(self, f'{service}@22222')
-
-            # Netdata uninstaller
-            if '/var/lib/wo/tmp/kickstart.sh' in packages:
-                if os.path.exists(
-                        '/usr/libexec/netdata/netdata-uninstaller.sh'):
-                    Log.debug(self, "Uninstalling Netdata from /etc/netdata")
-                    WOShellExec.cmd_exec(
-                        self, "bash /usr/libexec/netdata/netdata-"
-                        "uninstaller.sh -y -f",
-                        errormsg='', log=False)
-                    packages = packages + ["/etc/netdata"]
-                elif os.path.exists(
-                    '/opt/netdata/usr/libexec/'
-                        'netdata/netdata-uninstaller.sh'):
-                    Log.debug(self, "Uninstalling Netdata from /opt/netdata")
-                    WOShellExec.cmd_exec(
-                        self, "bash /opt/netdata/usr/libexec/netdata/netdata-"
-                        "uninstaller.sh -y -f")
-                    packages = packages + ["/opt/netdata"]
-                else:
-                    Log.debug(self, "Netdata uninstaller not found")
-                if WOMysql.mariadb_ping(self):
-                    WOMysql.execute(
-                        self, "DELETE FROM mysql.user WHERE User = 'netdata';")
-
-            if (apt_packages):
-                Log.wait(self, "Purging APT Packages        ")
-                WOAptGet.remove(self, apt_packages, purge=True)
-                WOAptGet.auto_remove(self)
-                Log.valide(self, "Purging APT Packages        ")
-            if (packages):
-                Log.wait(self, "Purging Packages            ")
-                WOFileUtils.remove(self, packages)
-                Log.valide(self, "Purging Packages            ")
-
-                if '/usr/share/nano-syntax-highlighting' in packages:
-                    # removing include line from nanorc
-                    WOShellExec.cmd_exec(
-                        self, 'grep -v "nano-syntax-highlighting" '
-                        '/etc/nanorc > /etc/nanorc.new')
-                    WOFileUtils.rm(self, '/etc/nanorc')
-                    WOFileUtils.mvfile(
-                        self, '/etc/nanorc.new', '/etc/nanorc')
-
-            Log.info(self, "Successfully purged packages")
+        # Execute purge
+        remover = StackRemover(self, purge=True)
+        remover.execute_removal(pargs)
 
 
-def load(app):
-    # register the plugin class.. this only happens if the plugin is enabled
+def load(app: Any) -> None:
+    """Load the stack plugin and register controllers.
+
+    Args:
+        app: The Cement application instance
+    """
+    # Register the plugin class
     app.handler.register(WOStackController)
     app.handler.register(WOStackStatusController)
     app.handler.register(WOStackMigrateController)
     app.handler.register(WOStackUpgradeController)
 
-    # register a hook (function) to run after arguments are parsed.
+    # Register hook to run after arguments are parsed
     app.hook.register('post_argument_parsing', wo_stack_hook)

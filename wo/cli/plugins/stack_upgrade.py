@@ -52,13 +52,13 @@ class WOStackUpgradeController(CementBaseController):
             (['--composer'],
              dict(help='Upgrade Composer', action='store_true')),
             (['--mysqltuner'],
-             dict(help='Upgrade Composer', action='store_true')),
+             dict(help='Upgrade MySQLTuner', action='store_true')),
             (['--phpmyadmin'],
              dict(help='Upgrade phpMyAdmin', action='store_true')),
             (['--adminer'],
              dict(help='Upgrade Adminer', action='store_true')),
             (['--ngxblocker'],
-             dict(help='Upgrade phpMyAdmin', action='store_true')),
+             dict(help='Upgrade Nginx Bad Bot Blocker', action='store_true')),
             (['--no-prompt'],
                 dict(help="Upgrade Packages without any prompt",
                      action='store_true')),
@@ -156,7 +156,7 @@ class WOStackUpgradeController(CementBaseController):
         # mysql
         if pargs.mysql:
             if WOMysql.mariadb_ping(self):
-                apt_packages = apt_packages + ['mariadb-server']
+                apt_packages = apt_packages + WOVar.wo_mysql
 
         # redis
         if pargs.redis:
@@ -274,19 +274,12 @@ class WOStackUpgradeController(CementBaseController):
         else:
             pre_stack(self)
             if apt_packages:
-                if not ("php7.2-fpm" in apt_packages or
-                        "php7.3-fpm" in apt_packages or
-                        "php7.4-fpm" in apt_packages or
-                        "php8.0-fpm" in apt_packages or
-                        "php8.1-fpm" in apt_packages or
-                        "php8.2-fpm" in apt_packages or
-                        "php8.3-fpm" in apt_packages or
-                        "php8.4-fpm" in apt_packages or
-                        "redis-server" in apt_packages or
-                        "nginx-custom" in apt_packages or
-                        "mariadb-server" in apt_packages):
-                    pass
-                else:
+                # Check if critical packages are being upgraded
+                critical_packages = ['redis-server', 'nginx-custom', 'mariadb-server']
+                for version in WOVar.wo_php_versions.values():
+                    critical_packages.append(f'php{version}-fpm')
+
+                if any(pkg in apt_packages for pkg in critical_packages):
                     Log.warn(
                         self, "Your sites may be down for few seconds if "
                         "you are upgrading Nginx, PHP-FPM, MariaDB or Redis")
@@ -384,40 +377,86 @@ class WOStackUpgradeController(CementBaseController):
 
                 if WOAptGet.is_selected(self, 'Composer', packages):
                     Log.wait(self, "Upgrading Composer")
-                    if WOShellExec.cmd_exec(
-                            self, '/usr/bin/php -v'):
-                        WOShellExec.cmd_exec(
-                            self, "php -q /var/lib/wo"
-                            "/tmp/composer-install "
-                            "--install-dir=/var/lib/wo/tmp/")
-                    shutil.copyfile('/var/lib/wo/tmp/composer.phar',
-                                    '/usr/local/bin/composer')
-                    WOFileUtils.chmod(self, "/usr/local/bin/composer", 0o775)
-                    Log.valide(self, "Upgrading Composer    ")
+                    try:
+                        if WOShellExec.cmd_exec(
+                                self, '/usr/bin/php -v'):
+                            WOShellExec.cmd_exec(
+                                self, "php -q /var/lib/wo"
+                                "/tmp/composer-install "
+                                "--install-dir=/var/lib/wo/tmp/")
+
+                        if not os.path.isfile('/var/lib/wo/tmp/composer.phar'):
+                            raise FileNotFoundError("Composer installation failed - composer.phar not created")
+
+                        shutil.copyfile('/var/lib/wo/tmp/composer.phar',
+                                        '/usr/local/bin/composer')
+                        WOFileUtils.chmod(self, "/usr/local/bin/composer", 0o775)
+                        Log.valide(self, "Upgrading Composer    ")
+                    except Exception as e:
+                        Log.failed(self, "Upgrading Composer    ")
+                        Log.error(self, f"Composer upgrade failed: {e}")
+                        Log.debug(self, f"Exception details: {str(e)}")
 
                 if WOAptGet.is_selected(self, 'PHPMyAdmin', packages):
                     Log.wait(self, "Upgrading phpMyAdmin")
-                    WOExtract.extract(self, '/var/lib/wo/tmp/pma.tar.gz',
-                                      '/var/lib/wo/tmp/')
-                    shutil.copyfile(('{0}22222/htdocs/db/pma'
-                                     '/config.inc.php'
-                                     .format(WOVar.wo_webroot)),
-                                    ('/var/lib/wo/tmp/phpMyAdmin-{0}'
-                                     '-all-languages/config.inc.php'
-                                     .format(wo_phpmyadmin))
-                                    )
-                    WOFileUtils.rm(self, '{0}22222/htdocs/db/pma'
-                                   .format(WOVar.wo_webroot))
-                    shutil.move('/var/lib/wo/tmp/phpMyAdmin-{0}'
-                                '-all-languages/'
-                                .format(wo_phpmyadmin),
-                                '{0}22222/htdocs/db/pma/'
-                                .format(WOVar.wo_webroot))
-                    WOFileUtils.chown(self, "{0}22222/htdocs"
-                                      .format(WOVar.wo_webroot),
-                                      'www-data',
-                                      'www-data', recursive=True)
-                    Log.valide(self, "Upgrading phpMyAdmin")
+
+                    pma_path = f'{WOVar.wo_webroot}22222/htdocs/db/pma'
+                    backup_path = f'{pma_path}.backup'
+                    config_src = f'{pma_path}/config.inc.php'
+                    config_dst = f'/var/lib/wo/tmp/phpMyAdmin-{wo_phpmyadmin}-all-languages/config.inc.php'
+
+                    try:
+                        # Extract new version
+                        WOExtract.extract(self, '/var/lib/wo/tmp/pma.tar.gz',
+                                          '/var/lib/wo/tmp/')
+
+                        # Backup old phpMyAdmin
+                        if os.path.isdir(pma_path):
+                            Log.debug(self, f"Creating backup of phpMyAdmin at {backup_path}")
+                            shutil.copytree(pma_path, backup_path)
+
+                        # Copy config file if it exists
+                        if os.path.isfile(config_src):
+                            shutil.copyfile(config_src, config_dst)
+                        else:
+                            Log.warn(self, "phpMyAdmin config file not found, upgrade may require reconfiguration")
+
+                        # Remove old installation
+                        WOFileUtils.rm(self, pma_path)
+
+                        # Move new version
+                        shutil.move(f'/var/lib/wo/tmp/phpMyAdmin-{wo_phpmyadmin}-all-languages/',
+                                    f'{pma_path}/')
+
+                        # Set proper ownership
+                        WOFileUtils.chown(self, f"{WOVar.wo_webroot}22222/htdocs",
+                                          'www-data',
+                                          'www-data', recursive=True)
+
+                        # Remove backup on success
+                        if os.path.isdir(backup_path):
+                            Log.debug(self, "Removing backup after successful upgrade")
+                            shutil.rmtree(backup_path)
+
+                        Log.valide(self, "Upgrading phpMyAdmin")
+
+                    except Exception as e:
+                        Log.failed(self, "Upgrading phpMyAdmin")
+                        Log.error(self, f"phpMyAdmin upgrade failed: {e}")
+                        Log.debug(self, f"Exception details: {str(e)}")
+
+                        # Restore from backup if exists
+                        if os.path.isdir(backup_path):
+                            try:
+                                if os.path.isdir(pma_path):
+                                    shutil.rmtree(pma_path)
+                                shutil.copytree(backup_path, pma_path)
+                                Log.info(self, "Restored phpMyAdmin from backup")
+                                shutil.rmtree(backup_path)
+                            except Exception as restore_error:
+                                Log.error(self, f"Failed to restore backup: {restore_error}")
+                        else:
+                            Log.error(self, "No backup available for restoration")
                 if os.path.exists('{0}22222/htdocs'.format(WOVar.wo_webroot)):
                     WOFileUtils.chown(self, "{0}22222/htdocs"
                                       .format(WOVar.wo_webroot),
