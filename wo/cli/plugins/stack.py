@@ -935,11 +935,11 @@ class WOStackController(CementBaseController):
             pargs.admin = True
             pargs.fail2ban = True
 
-        if pargs.mariadb:
+        if getattr(pargs, 'mariadb', False):
             pargs.mysql = True
 
         # Handle --all flag
-        if pargs.all:
+        if getattr(pargs, 'all', False):
             pargs.web = True
             pargs.admin = True
             for version_key in WOVar.wo_php_versions.keys():
@@ -948,7 +948,7 @@ class WOStackController(CementBaseController):
             pargs.proftpd = True
 
         # Handle --web stack
-        if pargs.web:
+        if getattr(pargs, 'web', False):
             pargs.php = True
             pargs.nginx = True
             pargs.mysql = True
@@ -956,7 +956,7 @@ class WOStackController(CementBaseController):
             pargs.sendmail = True
 
         # Handle --admin stack
-        if pargs.admin:
+        if getattr(pargs, 'admin', False):
             pargs.web = True
             pargs.adminer = True
             pargs.phpmyadmin = True
@@ -970,13 +970,13 @@ class WOStackController(CementBaseController):
             pargs.nanorc = True
 
         # Handle --security stack
-        if pargs.security:
+        if getattr(pargs, 'security', False):
             pargs.fail2ban = True
             pargs.clamav = True
             pargs.ngxblocker = True
 
         # Handle --php flag (install default PHP version)
-        if pargs.php:
+        if getattr(pargs, 'php', False):
             if self.app.config.has_section('php'):
                 config_php_ver = self.app.config.get('php', 'version')
                 current_php = config_php_ver.replace(".", "")
