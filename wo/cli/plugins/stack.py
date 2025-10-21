@@ -448,24 +448,24 @@ class StackRemover:
             Tuple of (apt_packages, file_packages)
         """
         # Process argument flags
-        if pargs.php:
+        if getattr(pargs, 'php', False):
             self._set_default_php_version(pargs)
 
-        if pargs.mariadb:
+        if getattr(pargs, 'mariadb', False):
             pargs.mysql = True
 
         # Handle --all flag
-        if pargs.all:
+        if getattr(pargs, 'all', False):
             self._handle_all_flag(pargs)
 
         # Handle preset stacks
-        if pargs.web:
+        if getattr(pargs, 'web', False):
             self._handle_web_stack(pargs)
 
-        if pargs.admin:
+        if getattr(pargs, 'admin', False):
             self._handle_admin_stack(pargs)
 
-        if pargs.security:
+        if getattr(pargs, 'security', False):
             self._handle_security_stack(pargs)
 
         # Process individual components
@@ -522,7 +522,7 @@ class StackRemover:
     def _process_individual_components(self, pargs: Any) -> None:
         """Process individual component flags for removal."""
         # Nginx
-        if pargs.nginx and WOAptGet.is_installed(self.controller, 'nginx-custom'):
+        if getattr(pargs, 'nginx', False) and WOAptGet.is_installed(self.controller, 'nginx-custom'):
             Log.debug(self.controller, "Removing apt_packages variable of Nginx")
             self.apt_packages.extend(WOVar.wo_nginx)
 
@@ -530,41 +530,41 @@ class StackRemover:
         self._process_php_versions(pargs)
 
         # Redis
-        if pargs.redis and WOAptGet.is_installed(self.controller, 'redis-server'):
+        if getattr(pargs, 'redis', False) and WOAptGet.is_installed(self.controller, 'redis-server'):
             Log.debug(self.controller, "Remove apt_packages variable of Redis")
             self.apt_packages.append("redis-server")
 
         # MySQL/MariaDB
-        if pargs.mysql:
+        if getattr(pargs, 'mysql', False):
             self._process_mysql_removal(pargs)
 
         # MySQL Client
-        if pargs.mysqlclient and WOMysql.mariadb_ping(self.controller):
+        if getattr(pargs, 'mysqlclient', False) and WOMysql.mariadb_ping(self.controller):
             Log.debug(self.controller, "Removing apt_packages variable for MySQL Client")
             self.apt_packages.extend(WOVar.wo_mysql_client)
 
         # Fail2ban
-        if pargs.fail2ban and WOAptGet.is_installed(self.controller, 'fail2ban'):
+        if getattr(pargs, 'fail2ban', False) and WOAptGet.is_installed(self.controller, 'fail2ban'):
             Log.debug(self.controller, "Remove apt_packages variable of Fail2ban")
             self.apt_packages.extend(WOVar.wo_fail2ban)
 
         # ClamAV
-        if pargs.clamav and WOAptGet.is_installed(self.controller, 'clamav'):
+        if getattr(pargs, 'clamav', False) and WOAptGet.is_installed(self.controller, 'clamav'):
             Log.debug(self.controller, "Setting apt_packages variable for ClamAV")
             self.apt_packages.extend(WOVar.wo_clamav)
 
         # Sendmail
-        if pargs.sendmail and WOAptGet.is_installed(self.controller, 'sendmail'):
+        if getattr(pargs, 'sendmail', False) and WOAptGet.is_installed(self.controller, 'sendmail'):
             Log.debug(self.controller, "Setting apt_packages variable for Sendmail")
             self.apt_packages.append("sendmail")
 
         # ProFTPd
-        if pargs.proftpd and WOAptGet.is_installed(self.controller, 'proftpd-basic'):
+        if getattr(pargs, 'proftpd', False) and WOAptGet.is_installed(self.controller, 'proftpd-basic'):
             Log.debug(self.controller, "Remove apt_packages variable for ProFTPd")
             self.apt_packages.append("proftpd-basic")
 
         # UFW
-        if pargs.ufw and WOAptGet.is_installed(self.controller, 'ufw'):
+        if getattr(pargs, 'ufw', False) and WOAptGet.is_installed(self.controller, 'ufw'):
             Log.debug(self.controller, "Remove apt_packages variable for UFW")
             WOShellExec.cmd_exec(self.controller, 'ufw disable && ufw --force reset')
 
@@ -617,12 +617,12 @@ class StackRemover:
     def _process_file_packages(self, pargs: Any) -> None:
         """Process file-based package removals."""
         # nanorc
-        if pargs.nanorc and os.path.exists('/usr/share/nano-syntax-highlighting'):
+        if getattr(pargs, 'nanorc', False) and os.path.exists('/usr/share/nano-syntax-highlighting'):
             Log.debug(self.controller, "Add nano to packages list")
             self.packages.append("/usr/share/nano-syntax-highlighting")
 
         # WP-CLI
-        if pargs.wpcli:
+        if getattr(pargs, 'wpcli', False):
             Log.debug(self.controller, "Removing package variable of WPCLI")
             for wp_path in ['/usr/local/bin/wp', '/usr/bin/wp']:
                 if os.path.isfile(wp_path):
@@ -631,24 +631,24 @@ class StackRemover:
                 self.apt_packages.append('wp-cli')
 
         # phpMyAdmin
-        if pargs.phpmyadmin:
+        if getattr(pargs, 'phpmyadmin', False):
             pma_path = f'{WOVar.wo_webroot}22222/htdocs/db/pma'
             if os.path.isdir(pma_path):
                 Log.debug(self.controller, "Removing package of phpMyAdmin")
                 self.packages.append(pma_path)
 
         # Composer
-        if pargs.composer and os.path.isfile('/usr/local/bin/composer'):
+        if getattr(pargs, 'composer', False) and os.path.isfile('/usr/local/bin/composer'):
             Log.debug(self.controller, "Removing package of Composer")
             self.packages.append('/usr/local/bin/composer')
 
         # MySQLTuner
-        if pargs.mysqltuner and os.path.isfile('/usr/bin/mysqltuner'):
+        if getattr(pargs, 'mysqltuner', False) and os.path.isfile('/usr/bin/mysqltuner'):
             Log.debug(self.controller, "Removing packages for MySQLTuner")
             self.packages.append('/usr/bin/mysqltuner')
 
         # cheat.sh
-        if pargs.cheat and os.path.isfile('/usr/local/bin/cht.sh'):
+        if getattr(pargs, 'cheat', False) and os.path.isfile('/usr/local/bin/cht.sh'):
             Log.debug(self.controller, "Removing packages for cheat.sh")
             self.packages.extend([
                 '/usr/local/bin/cht.sh',
@@ -657,21 +657,21 @@ class StackRemover:
             ])
 
         # phpRedisAdmin
-        if pargs.phpredisadmin:
+        if getattr(pargs, 'phpredisadmin', False):
             redis_path = f'{WOVar.wo_webroot}22222/htdocs/cache/redis'
             if os.path.isdir(redis_path):
                 Log.debug(self.controller, "Removing package variable of phpRedisAdmin")
                 self.packages.append(redis_path)
 
         # Adminer
-        if pargs.adminer:
+        if getattr(pargs, 'adminer', False):
             adminer_path = f'{WOVar.wo_webroot}22222/htdocs/db/adminer'
             if os.path.isdir(adminer_path):
                 Log.debug(self.controller, "Removing package variable of Adminer")
                 self.packages.append(adminer_path)
 
         # Utils
-        if pargs.utils:
+        if getattr(pargs, 'utils', False):
             Log.debug(self.controller, "Removing package variable of utils")
             self.packages.extend([
                 f'{WOVar.wo_webroot}22222/htdocs/php/webgrind/',
@@ -682,12 +682,12 @@ class StackRemover:
             ])
 
         # Netdata
-        if pargs.netdata and (os.path.exists('/opt/netdata') or os.path.exists('/etc/netdata')):
+        if getattr(pargs, 'netdata', False) and (os.path.exists('/opt/netdata') or os.path.exists('/etc/netdata')):
             Log.debug(self.controller, "Removing Netdata")
             self.packages.append('/var/lib/wo/tmp/kickstart.sh')
 
         # WordOps Dashboard
-        if pargs.dashboard:
+        if getattr(pargs, 'dashboard', False):
             dashboard_index = f'{WOVar.wo_webroot}22222/htdocs/index.php'
             dashboard_html = f'{WOVar.wo_webroot}22222/htdocs/index.html'
             if os.path.isfile(dashboard_index) or os.path.isfile(dashboard_html):
@@ -699,7 +699,7 @@ class StackRemover:
                 ])
 
         # ngxblocker
-        if pargs.ngxblocker and os.path.isfile('/usr/local/sbin/setup-ngxblocker'):
+        if getattr(pargs, 'ngxblocker', False) and os.path.isfile('/usr/local/sbin/setup-ngxblocker'):
             self.packages.extend([
                 '/usr/local/sbin/setup-ngxblocker',
                 '/usr/local/sbin/install-ngxblocker',
@@ -1027,10 +1027,10 @@ class WOStackController(CementBaseController):
             installer = StackComponentInstaller(self, pkg_manager)
 
             # Install components based on arguments
-            if pargs.nginx:
+            if getattr(pargs, 'nginx', False):
                 installer.install_nginx()
 
-            if pargs.redis:
+            if getattr(pargs, 'redis', False):
                 installer.install_redis()
 
             # Install PHP versions
@@ -1039,78 +1039,78 @@ class WOStackController(CementBaseController):
                     installer.install_php_version(parg_version, version)
 
             # MySQL/MariaDB
-            if pargs.mysql:
+            if getattr(pargs, 'mysql', False):
                 pargs.mysqltuner = True
                 installer.install_mysql()
 
-            if pargs.mysqlclient:
+            if getattr(pargs, 'mysqlclient', False):
                 installer.install_mysql_client()
 
             # Other components
-            if pargs.wpcli:
+            if getattr(pargs, 'wpcli', False):
                 installer.install_wpcli()
 
-            if pargs.fail2ban:
+            if getattr(pargs, 'fail2ban', False):
                 installer.install_fail2ban()
 
-            if pargs.clamav:
+            if getattr(pargs, 'clamav', False):
                 installer.install_clamav()
 
-            if pargs.ufw:
+            if getattr(pargs, 'ufw', False):
                 installer.install_ufw()
 
-            if pargs.sendmail:
+            if getattr(pargs, 'sendmail', False):
                 installer.install_sendmail()
 
-            if pargs.proftpd:
+            if getattr(pargs, 'proftpd', False):
                 installer.install_proftpd()
 
             # Brotli compression
-            if pargs.brotli:
+            if getattr(pargs, 'brotli', False):
                 BrotliManager.enable(self)
 
             # Admin tools
-            if pargs.phpmyadmin:
+            if getattr(pargs, 'phpmyadmin', False):
                 pargs.composer = True
                 installer.install_phpmyadmin()
 
-            if pargs.phpredisadmin:
+            if getattr(pargs, 'phpredisadmin', False):
                 pargs.composer = True
                 installer.install_phpredisadmin()
 
-            if pargs.composer:
+            if getattr(pargs, 'composer', False):
                 if not WOAptGet.is_exec(self, 'php'):
                     pargs.php = True
                 installer.install_composer()
 
-            if pargs.adminer:
+            if getattr(pargs, 'adminer', False):
                 installer.install_adminer()
 
-            if pargs.mysqltuner:
+            if getattr(pargs, 'mysqltuner', False):
                 installer.install_mysqltuner()
 
-            if pargs.netdata:
+            if getattr(pargs, 'netdata', False):
                 installer.install_netdata()
 
-            if pargs.dashboard:
+            if getattr(pargs, 'dashboard', False):
                 installer.install_dashboard()
 
-            if pargs.extplorer:
+            if getattr(pargs, 'extplorer', False):
                 installer.install_extplorer()
 
-            if pargs.ngxblocker:
+            if getattr(pargs, 'ngxblocker', False):
                 if not WOAptGet.is_exec(self, 'nginx'):
                     pargs.nginx = True
                 installer.install_ngxblocker()
 
-            if pargs.cheat:
+            if getattr(pargs, 'cheat', False):
                 installer.install_cheat()
 
-            if pargs.nanorc:
+            if getattr(pargs, 'nanorc', False):
                 installer.install_nanorc()
 
             # Utils
-            if pargs.utils:
+            if getattr(pargs, 'utils', False):
                 if not WOMysql.mariadb_ping(self):
                     pargs.mysql = True
                 if not self._check_php_installed():
@@ -1164,7 +1164,7 @@ class WOStackController(CementBaseController):
             return
 
         # Handle Brotli separately
-        if pargs.brotli:
+        if getattr(pargs, 'brotli', False):
             BrotliManager.disable(self)
             return
 
