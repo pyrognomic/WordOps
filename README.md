@@ -1,266 +1,168 @@
-<p align="center"><img src="https://raw.githubusercontent.com/WordOps/WordOps/master/logo.png" width="400" alt="Wordops" /><a href="https://wordops.net">
+# WordOps
 
-  <br>
-</p>
+WordOps is a Python CLI for provisioning and operating Nginx-based websites on Linux.
 
-<h2 align="center">An essential toolset that eases WordPress site and server administration</h2>
+The current codebase supports more than WordPress:
+- Static sites (`--html`)
+- PHP sites (`--php`, `--php74`..`--php84`)
+- PHP + MySQL sites (`--mysql`)
+- Reverse proxy sites (`--proxy host[:port]`)
+- Alias/redirect-like vhosts (`--alias domain`)
+- WordPress single site and multisite variants
 
-<p align="center">
-<img src="https://docs.wordops.net/images/wordops-intro.gif" width="800" alt="WordOps" />
-</p>
+This repository is the CLI source code, templates, install scripts, and tests.
 
-<p align="center">
-<a href="https://github.com/WordOps/WordOps/actions" target="_blank"><img src="https://github.com/WordOps/WordOps/actions/workflows/main.yml/badge.svg?branch=master" alt="CI"></a>
-<img src="https://img.shields.io/github/license/wordops/wordops.svg?cacheSeconds=86400" alt="MIT">
-<img src="https://img.shields.io/github/last-commit/wordops/wordops.svg?cacheSeconds=86400" alt="Commits">
-<img alt="GitHub release" src="https://img.shields.io/github/release/WordOps/WordOps.svg">
-<br><a href="https://pypi.org/project/wordops/" target="_blank"><img alt="PyPI - Downloads" src="https://img.shields.io/pypi/dm/wordops.svg?cacheSeconds=86400"></a>
-<a href="https://twitter.com/WordOps_" target="_blank"><img src="https://img.shields.io/badge/twitter-%40WordOps__-blue.svg?style=flat&logo=twitter&cacheSeconds=86400" alt="Badge Twitter" /></a>
-</p>
+## Current Scope (From Code)
 
-<p align="center">
-  <a href="#key-features">Key Features</a> •
-  <a href="#usage">Usage</a> •
-  <a href="https://github.com/WordOps/WordOps/projects">RoadMap</a> •
-  <a href="https://github.com/WordOps/WordOps/blob/master/CHANGELOG.md">Changelog</a> •
-  <a href="#credits">Credits</a> •
-  <a href="#license">License</a>
-</p>
-<p align="center">
-<a href="https://wordops.net" target="_blank"> WordOps.net</a> •
-<a href="https://docs.wordops.net" target="_blank">Documentation</a> •
-<a href="https://community.wordops.net" target="_blank">Community Forum</a> •
-<a href="https://demo.wordops.eu" target="_blank">Dashboard demo</a>
-</p>
+- Runtime framework: Cement (`wo/cli/main.py`)
+- Site state DB: SQLite via SQLAlchemy (`wo/core/database.py`, `wo/cli/plugins/models.py`)
+- Site lifecycle: `wo/cli/plugins/site_*.py`
+- Stack install/upgrade/remove: `wo/cli/plugins/stack*.py`
+- Templates rendered by commands: `wo/cli/templates/*.mustache`
+- Backup service: `wo/core/backup.py`
 
----
-
-## Key Features
-
--   **Easy to install** : One step automated installer with migration from EasyEngine v3 support
--   **Fast deployment** : Fast and automated WordPress, Nginx, PHP, MySQL & Redis installation
--   **Custom Nginx build** : Nginx 1.28.0 - TLS v1.3 HTTP/3 QUIC & Brotli support
--   **Up-to-date** : PHP 7.4, 8.0, 8.1, 8.2, 8.3 & 8.4 - MariaDB 11.4 LTS & Redis 7.0
--   **Secured** : Hardened WordPress security with strict Nginx location directives
--   **Powerful** : Optimized Nginx configurations with multiple cache backends support
--   **SSL** : Domain, Subdomain & Wildcard Let's Encrypt SSL certificates with DNS API support
--   **Modern** : Strong ciphers_suite, modern TLS protocols and HSTS support (Grade A+ on [ssllabs](https://www.ssllabs.com/ssltest/analyze.html?d=demo.wordops.eu&latest))
--   **Monitoring** : Live Nginx vhost traffic with ngx_vts_module and server monitoring with Netdata
--   **User Friendly** : WordOps dashboard with server status/monitoring and tools ([demo](https://demo.wordops.eu))
--   **Release cycle** : WordOps stable releases are published in June and December.
-
----
-
-## Requirements
-
-### Operating System
-
-#### Recommended
-
--   Ubuntu 24.04 LTS (Noble)
--   Ubuntu 22.04 LTS (Jammy)
--   Ubuntu 20.04 LTS (Focal)
-
-#### Also compatible
-
--   Debian 11 (Bullseye)
--   Debian 12 (Bookworm)
-
-#### For testing purpose only
-
--   Raspbian 11 (Bullseye)
-
-## Getting Started
+## Quick Command Examples
 
 ```bash
-wget -qO wo wops.cc && sudo bash wo      # Install WordOps
-sudo wo site create example.com --wp     # Install required packages & setup WordPress on example.com
-```
+# Create non-WordPress sites
+wo site create example.com --html
+wo site create example.com --php --php84
+wo site create example.com --mysql --php83
+wo site create example.com --proxy 127.0.0.1:3000
+wo site create alias.example.com --alias example.com
 
-Detailed Getting Started guide with additional installation methods can be found in [the documentation](https://docs.wordops.net/getting-started/installation-guide/).
+# Create WordPress sites
+wo site create blog.example.com --wp
+wo site create shop.example.com --wpfc
+wo site create network.example.com --wpsubdir
+wo site create network.example.com --wpsubdomain
+wo site create app.example.com --wp --template docs/examples/wp-template.json
 
-## Usage
+# Change site type / cache / PHP version
+wo site update example.com --php82
+wo site update example.com --wpredis
+wo site update example.com --letsencrypt=on
 
-### Standard WordPress sites
+# Backup / restore
+wo site backup example.com
+wo site backup --all --path /mnt/backups
+wo site restore /var/www/example.com/backup/example.com/2026-01-10_03-20-11.tar.zst
 
-```bash
-wo site create example.com --wp                # install wordpress with [Current supported PHP release](https://endoflife.date/php) without any page caching
-wo site create example.com --wp  --php84       # install wordpress with PHP 8.4  without any page caching
-wo site create example.com --wpfc              # install wordpress + nginx fastcgi_cache
-wo site create example.com --wpredis           # install wordpress + nginx redis_cache
-wo site create example.com --wprocket          # install wordpress with WP-Rocket plugin
-wo site create example.com --wpce              # install wordpress with Cache-enabler plugin
-wo site create example.com --wpsc              # install wordpress with wp-super-cache plugin
-wo site create example.com --wp --template docs/examples/wp-template.json  # install wordpress and apply the provisioning template
-```
+# Site HTTP basic auth
+wo site secure example.com
+wo site secure example.com --rm
 
-### WordPress multisite with subdirectory
+# Stack management
+wo stack install --web
+wo stack install --php84 --redis
+wo stack upgrade --all
+wo stack status
 
-```bash
-wo site create example.com --wpsubdir            # install wpmu-subdirectory without any page caching
-wo site create example.com --wpsubdir --wpsc     # install wpmu-subdirectory with wp-super-cache plugin
-wo site create example.com --wpsubdir --wpfc     # install wpmu-subdirectory + nginx fastcgi_cache
-wo site create example.com --wpsubdir --wpredis  # install wpmu-subdirectory + nginx redis_cache
-wo site create example.com --wpsubdir --wprocket # install wpmu-subdirectory + WP-Rocket plugin
-wo site create example.com --wpsubdir --wpce     # install wpmu-subdirectory + Cache-Enabler plugin
-wo site create example.com --wpsubdir --template docs/examples/wp-template.json  # install wpmu-subdirectory site using the provisioning template
-```
+# WordPress autoupdate + visual regression
+wo site autoupdate backstop app.example.com --urls /,/pricing,/contact --reference
+wo site autoupdate run app.example.com
 
-### WordPress multisite with subdomain
-
-```bash
-wo site create example.com --wpsubdomain            # install wpmu-subdomain without any page caching
-wo site create example.com --wpsubdomain --wpsc     # install wpmu-subdomain with wp-super-cache plugin
-wo site create example.com --wpsubdomain --wpfc     # install wpmu-subdomain + nginx fastcgi_cache
-wo site create example.com --wpsubdomain --wpredis  # install wpmu-subdomain + nginx redis_cache
-wo site create example.com --wpsubdomain --wprocket # install wpmu-subdomain + WP-Rocket plugin
-wo site create example.com --wpsubdomain --wpce     # install wpmu-subdomain + Cache-Enabler plugin
-wo site create example.com --wpsubdomain --template docs/examples/wp-template.json  # install wpmu-subdomain site using the provisioning template
-```
-
-### Non-WordPress sites
-
-```bash
-wo site create example.com --html     # create example.com for static/html sites
-wo site create example.com --php      # create example.com with [Current supported PHP release](https://endoflife.date/php)
-wo site create example.com --php81      # create example.com with php 8.1 support
-wo site create example.com --php82      # create example.com with php 8.2 support
-wo site create example.com --php84      # create example.com with php 8.4 support
-wo site create example.com --mysql    # create example.com with php 8.2 & mysql support
-wo site create example.com --mysql --php83   # create example.com with php 8.3 & mysql support
-wo site create example.com --proxy=127.0.0.1:3000 #  create example.com with nginx as reverse-proxy
-```
-
-### Switch between PHP versions
-
-```bash
-wo site update example.com --php74 # switch to PHP 7.4
-wo site update example.com --php80 # switch to PHP 8.0
-wo site update example.com --php81 # switch to PHP 8.1
-wo site update example.com --php82 # switch to PHP 8.2
-wo site update example.com --php83 # switch to PHP 8.3
-wo site update example.com --php84 # switch to PHP 8.4
-```
-### Nginx configuration layout
-
-WordOps generates Nginx configuration files under `/etc/nginx` using a
-combination of per-site variables and shared includes:
-
-```
-/etc/nginx
-├── acls/              # per-site authentication snippets
-├── common/            # shared includes (php.conf, wp.conf, redis.conf)
-├── conf.d/            # global tuning and maps
-├── sites-available/   # vhost definitions
-└── sites-enabled/     # symlinks to enabled vhosts
-```
-
-Each server block sets the PHP version and pool slug before including the
-generic PHP handler which connects to a site-specific socket:
-
-```
-set $php_ver   84;        # PHP version (without a dot)
-set $pool_name example;   # slug for the PHP-FPM pool
-include common/php.conf;  # -> /run/php/php${php_ver}-fpm-${pool_name}.sock
-```
-
-WordPress sites also include `common/wp.conf` to route backend requests and
-apply login protections.
-
-### Code architecture
-
-WordOps is a Python command line application built with the
-[Cement framework](https://builtoncement.com/). The entry point is
-`wo/cli/main.py`, which defines `WOApp` and attaches all controllers.
-
-- Controllers in `wo/cli/plugins/` expose the CLI commands. Each controller
-  subclasses `CementBaseController` and groups related actions.
-  - `WOSiteCreateController`, `WOSiteUpdateController` and `WOSiteCloneController`
-    handle provisioning and maintenance of vhosts.
-  - `WOSecureController` edits Nginx files to enable or clear HTTP basic
-    authentication.
-  - `WOStackController` and its siblings manage installation and upgrades of
-    system packages.
-- Shared helpers in `wo/cli/plugins/site_functions.py` provide reusable
-  routines:
-  - `setup_php_fpm()` renders systemd units and pool files so each site runs its
-    own PHP-FPM master process under a dedicated user.
-  - `cleanup_php_fpm()` removes obsolete PHP-FPM pools when switching versions.
-- Configuration templates live in `wo/cli/templates/` and are rendered with
-  per-site context to produce Nginx and PHP-FPM configuration files.
-
-### Sites secured with Let's Encrypt
-
-```bash
-wo site create example.com --wp -le #  wordpress & letsencrypt
-wo site create sub.example.com --wp -le # wordpress & letsencrypt subdomain
-wo site create example.com --wp --letsencrypt --hsts # wordpress & letsencrypt with HSTS
-wo site create example.com --wp -le=wildcard --dns=dns_cf # wordpress & wildcard SSL certificate with Cloudflare DNS API
-```
-
-## Update WordOps
-
-```bash
+# WordOps self update (alias to wo_update controller)
 wo update
 ```
 
-## Support
+## Non-WordPress Deployment Modes
 
-If you feel there is a bug directly related to WordOps, or if you want to suggest new features for WordOps, feel free to open an issue.
-For any other questions about WordOps or if you need support, please use the [Community Forum](https://community.wordops.net/).
+WordOps can be used to deploy and operate non-WordPress sites directly:
 
-## Contributing
+- Static websites (`--html`)
+- Custom PHP websites (`--php` + optional `--php74..--php84`)
+- PHP + MySQL applications (`--mysql`)
+- Reverse proxy vhosts (`--proxy host[:port]`)
+- Redirect/alias vhosts (`--alias domain`)
 
-If you'd like to contribute, please fork the repository and make changes as you'd like. Pull requests are warmly welcome.
-There is no need to be a developer or a system administrator to contribute to WordOps project. You can still contribute by helping us to improve [WordOps documentation](https://github.com/WordOps/docs.wordops.net).
-Otherwise, you can still contribute to the project by making a donation on [Ko-Fi](https://ko-fi.com/wordops).
+Implementation details, lifecycle support, and caveats:
+- `docs/SITE_TYPE_CAPABILITIES.md`
 
-## Sponsors
+## WordPress Provisioning Templates
 
-Thanks to our generous sponsors for supporting the development of WordOps:
+WordPress provisioning templates are supported during `wo site create`:
 
-| [Liquid Web](https://www.liquidweb.com/)                                                                                                               |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| <a href="https://www.liquidweb.com/" target="_blank"><img src="https://docs.wordops.net/images/liquid-web.png" alt="Liquid Web logo" width="200"/></a> |
+```bash
+wo site create app.example.com --wp --template docs/examples/wp-template.json
+```
 
-## Credits
+Implemented behavior:
+- Template file must be a valid JSON object.
+- Top-level sections: `themes`, `plugins`, `options`, `constants`.
+- Each theme/plugin entry must define `slug` or `url`.
+- Optional booleans:
+  - `activate` for activation
+  - `network` for multisite network scope
+- Plugin entry `options` are applied after install using WP-CLI option/meta updates.
 
--   Source : [EasyEngine](https://github.com/easyengine/easyengine)
+Repository examples:
+- `docs/examples/wp-template.json`
+- `docs/examples/wp-kadence-template.json`
 
-Apps & Tools shipped with WordOps :
+Full schema and execution details:
+- `docs/WORDPRESS_TEMPLATE_USAGE.md`
 
--   [Acme.sh](https://github.com/Neilpang/acme.sh)
--   [WP-CLI](https://github.com/wp-cli/wp-cli)
--   [Netdata](https://github.com/netdata/netdata)
--   [phpMyAdmin](https://www.phpmyadmin.net/)
--   [Composer](https://github.com/composer/composer)
--   [Adminer](https://www.adminer.org/)
--   [phpRedisAdmin](https://github.com/erikdubbelboer/phpRedisAdmin)
--   [opcacheGUI](https://github.com/amnuts/opcache-gui)
--   [eXtplorer](https://github.com/soerennb/extplorer)
--   [Webgrind](https://github.com/jokkedk/webgrind)
--   [MySQLTuner](https://github.com/major/MySQLTuner-perl)
--   [Fail2Ban](https://github.com/fail2ban/fail2ban)
--   [ClamAV](https://github.com/Cisco-Talos/clamav-devel)
--   [cheat.sh](https://github.com/chubin/cheat.sh)
--   [ProFTPd](https://github.com/proftpd/proftpd)
--   [Nginx-ultimate-bad-bot-blocker](https://github.com/mitchellkrogza/nginx-ultimate-bad-bot-blocker/)
--   [Nanorc](https://github.com/scopatz/nanorc)
+## Visual Regression in Autoupdate (BackstopJS)
 
-Third-party debian packages shipped with WordOps :
+Autoupdate supports visual regression checks through BackstopJS hooks.
 
--   [Nginx-wo by WordOps](https://build.opensuse.org/package/show/home:virtubox:WordOps/nginx)
--   [PHP by Ondřej Surý](https://launchpad.net/~ondrej/+archive/ubuntu/php)
--   [Redis](https://redis.io/docs/getting-started/installation/install-redis-on-linux/)
+1. Scaffold Backstop config/hook:
+```bash
+wo site autoupdate backstop app.example.com --urls /,/pricing,/contact --reference
+```
+2. Run updates:
+```bash
+wo site autoupdate run app.example.com
+```
 
-WordPress Cache Plugins supported by WordOps :
+Code behavior:
+- If `conf/backstop.config.js` exists, autoupdate generates a pre-update reference.
+- Post-update it executes `conf/autoupdate-visual-cmd`.
+- The default hook template runs:
+  - `npx backstop test --config=<config_path> --report=CI`
+- On visual failure, autoupdate attempts rollback by restoring the created backup archive.
 
--   [Nginx-helper](https://github.com/rtCamp/nginx-helper)
--   [Cache-Enabler](https://github.com/keycdn/cache-enabler)
--   [Redis-object-cache](https://github.com/tillkruss/redis-cache)
--   [WP-Super-Cache](https://github.com/Automattic/wp-super-cache)
--   [WP-Rocket](https://github.com/wp-media/wp-rocket)
+## Repository Layout
 
-## License
+- `wo/cli/main.py`: app entry point, root check, Cement app wiring
+- `wo/cli/controllers/base.py`: root controller and `--version`
+- `wo/cli/plugins/`: command controllers and shared site logic
+- `wo/cli/templates/`: mustache templates used to render configs/scripts
+- `wo/core/`: low-level helpers (services, shell, files, SSL, DB, backup)
+- `config/plugins.d/*.conf`: plugin enablement and module wiring
+- `tests/`: CLI and helper tests
+- `docs/`: operational/developer documentation
 
--   [MIT](http://opensource.org/licenses/MIT) © [WordOps](https://wordops.net)
+## Important Generated Paths
+
+- Nginx vhosts:
+  - `/etc/nginx/sites-available/<domain>`
+  - `/etc/nginx/sites-enabled/<domain>`
+- Site webroot:
+  - `/var/www/<domain>/`
+- Site log symlinks:
+  - `/var/www/<domain>/logs/access.log`
+  - `/var/www/<domain>/logs/error.log`
+- HTTP auth per-site ACL:
+  - `/etc/nginx/acl/<slug>/protected.conf`
+  - `/etc/nginx/acl/<slug>/credentials`
+- Per-site PHP-FPM isolation:
+  - `/etc/php/<ver>/fpm/php-fpm-<slug>.conf`
+  - `/etc/php/<ver>/fpm/pool.d/<slug>.conf`
+  - `/run/php/php<verNoDot>-fpm-<slug>.sock`
+  - `systemd: php<ver>-fpm@<slug>`
+
+## Documentation Index
+
+- Full command reference: `WORDOPS_COMMANDS_REFERENCE.md`
+- Architecture + extension guide: `docs/ARCHITECTURE_AND_EXTENSION_GUIDE.md`
+- Site-type capability matrix (static/php/mysql/proxy/alias/wp): `docs/SITE_TYPE_CAPABILITIES.md`
+- WordPress template schema and examples: `docs/WORDPRESS_TEMPLATE_USAGE.md`
+- Autoupdate behavior: `docs/AUTOUPDATE_USAGE.md`
+- Backup internals: `docs/BACKUP_ARCHITECTURE.md`
+
+## Notes
+
+- The CLI expects root privileges (`wo/cli/main.py` enforces `geteuid() == 0`).
+- The codebase includes legacy commands and compatibility paths; docs in this repo are aligned to what current code does, including known quirks.
